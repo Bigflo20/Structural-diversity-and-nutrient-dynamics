@@ -1,1 +1,157 @@
-## Packages
+rm(list=ls())
+options(max.print = .Machine$integer.max)
+
+#################################################### Install and load required
+libs <- c('MuMIn', 'lme4', 'nlme','Matrix', 'car')
+to_install <- libs[!libs %in% installed.packages()]
+if (length(to_install)) install.packages(to_install)
+invisible(lapply(libs, library, character.only = TRUE))
+
+
+################################################### Load the data
+# Use data_flo
+
+data_flo=read.table("clipboard", sep="\t", h=T)
+
+
+#################################################### RUnning MuMin to select optimal variables
+########### For SOC
+
+resp_soc <- c("socall", "soc20", "soc40", "soc60")
+reslts_soc <- list()
+
+for (resp in resp_soc) {
+  cat("\n============================\n")
+  cat("Running model for:", resp, "\n")
+  cat("============================\n")
+  form <- as.formula(paste(resp, "~ wd + hm + sla + ldmc + lcc + lnc"))
+  mod <- lme(form, random = ~1 | vegetation/plot_ID, data = data_flo)
+  shapiro_p <- shapiro.test(residuals(mod))$p.value
+  vifs <- tryCatch(car::vif(mod), error = function(e) NA)
+  dredged <- dredge(mod, beta = "sd", trace = FALSE, evaluate = TRUE, rank = "AICc", REML = FALSE)
+  best_model <- get.models(dredged, 1)[[1]]
+  best_summary <- summary(best_model)
+  sw_table <- sw(dredged)
+  
+  # Store results in list
+  reslts_soc[[resp]] <- list(
+    model = mod,
+    shapiro_p = shapiro_p,
+    vif = vifs,
+    dredge_table = dredged,
+    best_model = best_model,
+    best_summary = best_summary,
+    importance = sw_table
+  )
+  
+  # Print summary to console
+  cat("\nShapiro-Wilk p-value:", round(shapiro_p, 4), "\n")
+  cat("Top model AICc:", round(dredged$AICc[1], 2), "\n\n")
+  cat("Variable importance:\n")
+  print(round(sw_table, 3))
+  cat("VIF:\n")
+  print(round(vifs, 2))
+  cat("\nSummary of best model:\n")
+  print(best_summary)
+  cat("\n---- End of results for", resp, "----\n")
+}
+
+
+########### For STN (Note that when the best model includes only the intercept
+########### the second best model was considered; e.g., of stnall) 
+
+resp_stn <- c("stnall", "stn20", "stn40", "stn60")
+reslts_stn <- list()
+
+for (resp in resp_stn) {
+  cat("\n============================\n")
+  cat("Running model for:", resp, "\n")
+  cat("============================\n")
+  form <- as.formula(paste(resp, "~ wd + hm + sla + ldmc + lcc + lnc"))
+  mod <- lme(form, random = ~1 | vegetation/plot_ID, data = data_flo)
+  shapiro_p <- shapiro.test(residuals(mod))$p.value
+  vifs <- tryCatch(car::vif(mod), error = function(e) NA)
+  dredged <- dredge(mod, beta = "sd", trace = FALSE, evaluate = TRUE, rank = "AICc", REML = FALSE)
+  best_model <- get.models(dredged, 1)[[1]]
+  best_summary <- summary(best_model)
+  best_model2 <- get.models(dredged, 2)[[1]]
+  best_summary2 <- summary(best_model2)
+  sw_table <- sw(dredged)
+  
+  # Store results in list
+  reslts_stn[[resp]] <- list(
+    model = mod,
+    shapiro_p = shapiro_p,
+    vif = vifs,
+    dredge_table = dredged,
+    best_model = best_model,
+    best_model2 = best_model2,
+    best_summary = best_summary,
+    best_summary2 = best_summary2,
+    importance = sw_table
+  )
+  
+  # Print summary to console
+  cat("\nShapiro-Wilk p-value:", round(shapiro_p, 4), "\n")
+  cat("Top model AICc:", round(dredged$AICc[1], 2), "\n\n")
+  cat("Variable importance:\n")
+  print(round(sw_table, 3))
+  cat("VIF:\n")
+  print(round(vifs, 2))
+  cat("\nSummary of best model:\n")
+  print(best_summary)
+  cat("\nSummary of second best model:\n")
+  print(best_summary2)
+  cat("\n---- End of results for", resp, "----\n")
+}
+
+
+########### For SCN (Note that when the best model includes only the intercept
+########### the second best model was considered; e.g., of stnall) 
+
+resp_scn <- c("scnall", "scn20", "scn40", "scn60")
+reslts_scn <- list()
+
+for (resp in resp_scn) {
+  cat("\n============================\n")
+  cat("Running model for:", resp, "\n")
+  cat("============================\n")
+  form <- as.formula(paste(resp, "~ wd + hm + sla + ldmc + lcc + lnc"))
+  mod <- lme(form, random = ~1 | vegetation/plot_ID, data = data_flo)
+  shapiro_p <- shapiro.test(residuals(mod))$p.value
+  vifs <- tryCatch(car::vif(mod), error = function(e) NA)
+  dredged <- dredge(mod, beta = "sd", trace = FALSE, evaluate = TRUE, rank = "AICc", REML = FALSE)
+  best_model <- get.models(dredged, 1)[[1]]
+  best_summary <- summary(best_model)
+  best_model2 <- get.models(dredged, 2)[[1]]
+  best_summary2 <- summary(best_model2)
+  sw_table <- sw(dredged)
+  
+  # Store results in list
+  reslts_scn[[resp]] <- list(
+    model = mod,
+    shapiro_p = shapiro_p,
+    vif = vifs,
+    dredge_table = dredged,
+    best_model = best_model,
+    best_model2 = best_model2,
+    best_summary = best_summary,
+    best_summary2 = best_summary2,
+    importance = sw_table
+  )
+  
+  # Print summary to console
+  cat("\nShapiro-Wilk p-value:", round(shapiro_p, 4), "\n")
+  cat("Top model AICc:", round(dredged$AICc[1], 2), "\n\n")
+  cat("Variable importance:\n")
+  print(round(sw_table, 3))
+  cat("VIF:\n")
+  print(round(vifs, 2))
+  cat("\nSummary of best model:\n")
+  print(best_summary)
+  cat("\nSummary of second best model:\n")
+  print(best_summary2)
+  cat("\n---- End of results for", resp, "----\n")
+}
+
+
