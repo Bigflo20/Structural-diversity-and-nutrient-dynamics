@@ -107,7 +107,7 @@ for (resp in resp_stn) {
 
 
 ########### For SCN (Note that when the best model includes only the intercept
-########### the second best model was considered; e.g., of stnall) 
+########### the second best model was considered) 
 
 resp_scn <- c("scnall", "scn20", "scn40", "scn60")
 reslts_scn <- list()
