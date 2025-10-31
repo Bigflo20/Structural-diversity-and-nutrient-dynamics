@@ -1,1 +1,301 @@
+library(piecewiseSEM)
 
+# Use data_flo
+data_flo=read.table("clipboard", sep="\t", h=T)
+
+#################################################################### For SOC stock
+
+######################################### Main models
+
+############### 0-60 cm (whole profile)
+modCall <-psem(
+  lme(strc~ai+hmod+clayall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clayall+strc+lnc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(socall~ai+hmod+clayall+strc+lnc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCall)
+
+############## 0-20 cm
+modC20 <-psem(
+  lme(strc~ai+hmod+clay20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(hm~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay20+strc+hm+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(soc20~ai+hmod+clay20+strc+hm+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modC20)
+
+############## 20-40 cm
+modC40 <-psem(
+  lme(strc~ai+hmod+clay40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay40+strc+lnc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(soc40~ai+hmod+clay40+strc+lnc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modC40)
+
+############## 40-60 cm
+modC60 <-psem(
+  lme(strc~ai+hmod+clay60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay60+strc+lnc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(soc60~ai+hmod+clay60+strc+lnc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modC60)
+
+
+######################################### Feedback models
+
+############### 0-60 cm (whole profile)
+modCallf <-psem(
+  lme(socall~ai+hmod+clayall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clayall+socall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clayall+socall+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clayall+socall+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(fdis~ai+hmod+clayall+socall+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clayall+socall+agb+sesmpd+lnc+fdis, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCallf)
+
+############### 0-20 cm
+modC20f <-psem(
+  lme(soc20~ai+hmod+clay20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay20+soc20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay20+soc20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(hm~ai+hmod+clay20+soc20+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(fdis~ai+hmod+clay20+soc20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay20+soc20+agb+sesmpd+hm+fdis, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modC20f)
+
+############### 20-40 cm
+modC40f <-psem(
+  lme(soc40~ai+hmod+clay40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay40+soc40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay40+soc40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay40+soc40+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(fdis~ai+hmod+clay40+soc40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay40+soc40+agb+sesmpd+lnc+fdis, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modC40f)
+
+############### 40-60 cm
+modC60f <-psem(
+  lme(soc60~ai+hmod+clay60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay60+soc60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay60+soc60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay60+soc60+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(fdis~ai+hmod+clay60+soc60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay60+soc60+agb+sesmpd+lnc+fdis, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modC60f)
+
+
+
+
+
+#################################################################### For STN stock
+
+######################################### Main models
+
+############### 0-60 cm (whole profile)
+modNall <-psem(
+  lme(strc~ai+hmod+clayall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(wd~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clayall+strc+wd+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(stnall~ai+hmod+clayall+strc+wd+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modNall)
+
+
+############## 0-20 cm
+modN20 <-psem(
+  lme(strc~ai+hmod+clay20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(hm~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay20+strc+hm+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(stn20~ai+hmod+clay20+strc+hm+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modN20)
+
+############## 20-40 cm
+modN40 <-psem(
+  lme(strc~ai+hmod+clay40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay40+strc+lnc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(stn40~ai+hmod+clay40+strc+lnc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modN40)
+
+############## 40-60 cm
+modN60 <-psem(
+  lme(strc~ai+hmod+clay60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay60+strc+lnc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(stn60~ai+hmod+clay60+strc+lnc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modN60)
+
+
+######################################### Feedback models
+
+############### 0-60 cm (whole profile)
+modNallf <-psem(
+  lme(stnall~ai+hmod+clayall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clayall+stnall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clayall+stnall+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(wd~ai+hmod+clayall+stnall+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(fdis~ai+hmod+clayall+stnall+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clayall+stnall+agb+sesmpd+wd+fdis, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modNallf)
+
+
+############### 0-20 cm
+modN20f <-psem(
+  lme(stn20~ai+hmod+clay20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay20+stn20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay20+stn20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(hm~ai+hmod+clay20+stn20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay20+stn20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay20+stn20+agb+fdis+hm+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modN20f)
+
+############### 20-40 cm
+modN40f <-psem(
+  lme(stn40~ai+hmod+clay40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay40+stn40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay40+stn40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay40+stn40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay40+stn40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay40+stn40+agb+fdis+lnc+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modN40f)
+
+############### 40-60 cm
+modN60f <-psem(
+  lme(stn60~ai+hmod+clay60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay60+stn60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay60+stn60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lnc~ai+hmod+clay60+stn60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay60+stn60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay60+stn60+agb+fdis+lnc+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modN60f)
+
+
+
+
+#################################################################### For SCN stock
+
+######################################### Main models
+
+############### 0-60 cm (whole profile)
+modCNall <-psem(
+  lme(strc~ai+hmod+clayall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lcc~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clayall+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clayall+strc+lcc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(scnall~ai+hmod+clayall+strc+lcc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCNall)
+
+
+############## 0-20 cm
+modCN20 <-psem(
+  lme(strc~ai+hmod+clay20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lcc~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay20+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay20+strc+lcc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(scn20~ai+hmod+clay20+strc+lcc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCN20)
+
+############## 20-40 cm
+modCN40 <-psem(
+  lme(strc~ai+hmod+clay40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(hm~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay40+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay40+strc+hm+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(scn40~ai+hmod+clay40+strc+hm+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCN40)
+
+############## 40-60 cm
+modCN60 <-psem(
+  lme(strc~ai+hmod+clay60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(lcc~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay60+strc, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay60+strc+lcc+fdis+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(scn60~ai+hmod+clay60+strc+lcc+fdis+sesmpd+agb, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCN60)
+
+
+######################################### Feedback models
+
+############### 0-60 cm (whole profile)
+modCNallf <-psem(
+  lme(scnall~ai+hmod+clayall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clayall+scnall, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clayall+scnall+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(lcc~ai+hmod+clayall+scnall+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clayall+scnall+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clayall+scnall+agb+fdis+lcc+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCNallf)
+
+
+############### 0-20 cm 
+modCN20f <-psem(
+  lme(scn20~ai+hmod+clay20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay20+scn20, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay20+scn20+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(lcc~ai+hmod+clay20+scn20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay20+scn20+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay20+scn20+agb+fdis+lcc+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCN20f)
+
+
+############### 20-40 cm 
+modCN40f <-psem(
+  lme(scn40~ai+hmod+clay40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay40+scn40, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay40+scn40+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(hm~ai+hmod+clay40+scn40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay40+scn40+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay40+scn40+agb+fdis+hm+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCN40f)
+
+############### 40-60 cm 
+modCN60f <-psem(
+  lme(scn60~ai+hmod+clay60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(agb~ai+hmod+clay60+scn60, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(fdis~ai+hmod+clay60+scn60+agb, random = ~1|vegetation/plot_ID, data=data_flo), 
+  lme(lcc~ai+hmod+clay60+scn60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(sesmpd~ai+hmod+clay60+scn60+agb, random = ~1|vegetation/plot_ID, data=data_flo),
+  lme(strc~ai+hmod+clay60+scn60+agb+fdis+lcc+sesmpd, random = ~1|vegetation/plot_ID, data=data_flo)
+)
+summary(modCN60f)
