@@ -1,7 +1,6 @@
 library(piecewiseSEM)
 
-# Use data_flo
-data_flo=read.table("clipboard", sep="\t", h=T)
+# Use data_flo for the analysis
 
 #################################################################### For SOC stock
 
