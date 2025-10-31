@@ -11,9 +11,6 @@ invisible(lapply(libs, library, character.only = TRUE))
 ################################################### Load the data
 # Use data_flo
 
-data_flo=read.table("clipboard", sep="\t", h=T)
-
-
 #################################################### RUnning MuMin to select optimal variables
 ########### For SOC
 
