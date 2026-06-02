@@ -13,4 +13,5 @@ The R code allows you to perform the following analysis:
 11) Bivariate relationships analysis.
 
 
-To perform the analysis, use the dataset "data-flo"
+To perform the analysis, use the dataset "data-flo". 
+It should be noted that only the four variables (cvdbh, cvheight, dens, rich) used in calculating the Vegetation Complexity Index (VCI) are provided as raw data; transformed values are provided for all remaining variables.
