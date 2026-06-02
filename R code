@@ -1,0 +1,2196 @@
+################################################################################
+# # Manuscript: Vegetation complexity as a multi-dimensional indicator of soil 
+### organic carbon storage, but not nitrogen storage, in dryland ecosystems
+#
+# What this script does:
+#   1) Basic diagnostics of variables used to compute the vegetation complexity
+#    index (VCI)
+#   2) Pairwise correlations among VCI components and AGB
+#   3) Transforming non-normally distributed variables
+#   4) Constructing main and alternative vegetation complexity indices
+#   5) Pearson correlations among selected predictor variables (Fig. S2)
+#   6) Model selection with VIF filtering and model averaging for functional 
+#      identity/composition variables
+#   7) piecewise structural modeling (pSEM) for main forward conceptual models
+#   8) Bootstrapping analysis for main pSEM
+#   9) piecewise structural modeling (pSEM) for feedback conceptual models
+#  10) Bootstrapping analysis for main pSEM
+#  11) Bivariate relationships analysis
+################################################################################
+
+
+rm(list = ls())
+options(na.action = "na.fail")
+
+#------------------------------------------------------------------------------#
+# 0. Packages
+#------------------------------------------------------------------------------#
+
+pkgs <- c(
+  "readxl", "dplyr", "tidyr", "purrr", "stringr", "ggplot2", "tibble", "lavaan",
+  "nlme", "piecewiseSEM", "car", "MuMIn", "broom", "performance", "corrplot",
+  "stringr", "bestNormalize")
+
+to_install <- pkgs[!pkgs %in% rownames(installed.packages())]
+if (length(to_install) > 0) install.packages(to_install)
+invisible(lapply(pkgs, library, character.only = TRUE))
+
+
+#------------------------------------------------------------------------------#
+# 1. Setting directory and loading data
+#------------------------------------------------------------------------------#
+
+# Use data "data_flo"
+# See files "dictionary" for the description of variable abbreviations
+
+setwd(add link to your own directory)
+
+data_flo<-read.csv("data_flo.csv", header=T,as.is=T,na.strings="#N/A")
+
+
+# Change grouping variables to factor variables
+data_flo <- data_flo |>
+  mutate(vegetation = as.factor(vegetation), plot_ID = as.factor(plot_ID))
+
+
+#------------------------------------------------------------------------------#
+# 2. Basic diagnostics of variables used to compute the vegetation complexity
+#    index (VCI)
+#------------------------------------------------------------------------------#
+
+# 2.1. Structural component variables (raw values are provided in data_flo)
+struct_vars <- c("rich", "cvdbh", "cvheight", "dens")
+struct_summary <- data_flor |>
+  dplyr::group_by(vegetation) |>
+  dplyr::summarise(
+    dplyr::across(dplyr::all_of(struct_vars),
+      list(min  = ~min(.x, na.rm = TRUE),
+           max  = ~max(.x, na.rm = TRUE),
+           mean = ~mean(.x, na.rm = TRUE),
+           sd   = ~sd(.x, na.rm = TRUE)),
+      .names = "{.col}_{.fn}"), .groups = "drop")
+write.csv(struct_summary, "diagnostic_structural_component_summary.csv", row.names = FALSE)
+
+
+# 2.2. Univariate outlier screen across numeric variables
+
+numeric_vars <- names(data_flor)[sapply(data_flor, is.numeric)]
+outlier_table <- data_flor |>
+  mutate(row_id = row_number()) |>
+  select(row_id, all_of(numeric_vars)) |>
+  pivot_longer(-row_id, names_to = "variable", values_to = "value") |>
+  group_by(variable) |>
+  mutate(z = as.numeric(scale(value))) |>
+  ungroup() |>
+  filter(abs(z) > 3) |>
+  arrange(variable, desc(abs(z)))
+write.csv(outlier_table, "diagnostic_univariate_outliers_abs_z_gt_3.csv", row.names = FALSE)
+
+
+
+# ------------------------------------------------------------
+# 3. Transforming non-normally distributed variables
+# ------------------------------------------------------------
+
+
+# Note that this was applied to the raw dataset named "data_flor" and should not 
+# be executed here because the values in data-flo are already the transformed
+# variables. We provided the code for transparency 
+
+'
+# Helper function for computing Shaoiro Wilk p value
+safe_shapiro_p <- function(x) {
+  x <- x[is.finite(x)]
+  n <- length(x)
+  if (n < 3 || n > 5000 || length(unique(x)) < 3) {
+    return(NA_real_)
+  }
+  tryCatch(
+    shapiro.test(x)$p.value,
+    error = function(e) NA_real_)}
+
+# Helper funciton for strictly positive values
+shift_positive <- function(x, offset = 1e-6) {
+  min_x <- min(x, na.rm = TRUE)
+  if (is.na(min_x)) return(x)
+  if (min_x <= 0) {x - min_x + offset} else {x}}
+
+# Helper function for transforming variables
+transform_candidates <- function(x) {
+  x_pos <- shift_positive(x)
+  list(
+    raw = x,
+    log = log(x_pos),
+    sqrt = sqrt(x_pos))}
+
+
+# Helper function for selecting best transformation for each variable
+choose_best_transformation <- function(data, variable, alpha = 0.05) {
+  x <- data[[variable]]
+  raw_p <- safe_shapiro_p(x)
+    # If raw variable is already approximately normal, keep raw
+  if (!is.na(raw_p) && raw_p >= alpha) {
+    return(data.frame(variable = variable, raw_shapiro_p = raw_p,
+      selected_transformation = "raw", selected_shapiro_p = raw_p,
+      stringsAsFactors = FALSE))}
+  
+    # If raw p < 0.05, test transformations
+  candidates <- transform_candidates(x)
+    trans_p <- purrr::map_dfr(names(candidates), function(tr) {
+    data.frame(transformation = tr, shapiro_p = safe_shapiro_p(candidates[[tr]]),
+      stringsAsFactors = FALSE) })
+  
+  best <- trans_p |>
+    dplyr::filter(!is.na(shapiro_p)) |>
+    dplyr::arrange(dplyr::desc(shapiro_p)) |>
+    dplyr::slice(1)
+  
+  if (nrow(best) == 0) {
+    return(data.frame(variable = variable, raw_shapiro_p = raw_p, selected_transformation = "raw",
+      selected_shapiro_p = raw_p, stringsAsFactors = FALSE))}
+  
+  data.frame(
+    variable = variable,
+    raw_shapiro_p = raw_p,
+    selected_transformation = best$transformation,
+    selected_shapiro_p = best$shapiro_p,
+    stringsAsFactors = FALSE)}
+
+# Helper function to apply selected transformation
+apply_selected_transformation <- function(x, transformation) {
+  x_pos <- shift_positive(x)
+  if (transformation == "raw") {return(x)}
+  if (transformation == "log") {return(log(x_pos))}
+  if (transformation == "sqrt") {return(sqrt(x_pos))}
+  x}
+
+# Run transformation selection for all numeric variables
+transformation_decisions <- purrr::map_dfr(
+  numeric_vars, ~ choose_best_transformation(data_flor, .x, alpha = 0.05))
+
+write.csv(transformation_decisions,  "diagnostic_selected_transformations.csv", row.names = FALSE)
+
+
+# Create transformed and scaled dataset
+data_flo_transformed <- data_flor
+for (v in numeric_vars) {
+  
+  tr <- transformation_decisions |>
+    dplyr::filter(variable == v) |>
+    dplyr::pull(selected_transformation)
+  
+  if (length(tr) == 0) tr <- "raw"
+  new_v <- paste0(v, "_trans")
+  scaled_v <- paste0(v, "_z")
+  
+  data_flo_transformed[[new_v]] <- apply_selected_transformation(
+    data_flo_transformed[[v]], tr)
+  data_flo_transformed[[scaled_v]] <- as.numeric(scale(data_flo_transformed[[new_v]]))}
+write.csv(data_flo_transformed, "data_flo_transformed_scaled.csv", row.names = FALSE)
+
+# Check normality after transformation
+
+transformed_vars <- paste0(numeric_vars, "_trans")
+transformed_normality <- data_flo_transformed |>
+  dplyr::select(dplyr::all_of(transformed_vars)) |>
+  tidyr::pivot_longer(everything(), names_to = "variable_trans", values_to = "value") |>
+  dplyr::mutate(variable = stringr::str_remove(variable_trans, "_trans$")) |>
+  dplyr::group_by(variable) |>
+  dplyr::summarise(n = sum(!is.na(value)), transformed_shapiro_p = safe_shapiro_p(value), .groups = "drop") |>
+  dplyr::left_join(transformation_decisions, by = "variable") |>
+  dplyr::arrange(transformed_shapiro_p)
+write.csv(transformed_normality, "diagnostic_transformed_variable_shapiro_tests.csv", row.names = FALSE)
+
+# Note that after this step, variables of interest were selected and renamed
+# and those are the ones included in the dataset "data_flo"
+'
+
+
+# ------------------------------------------------------------------------------
+# 4. Pairwise correlations among VCI components and AGB to check for circularity
+# ------------------------------------------------------------------------------
+
+cor_vars <- c("rich", "cvdbh", "cvheight", "dens", "agb")
+cor_mat <- cor(data_flo[, cor_vars], use = "pairwise.complete.obs", method = "pearson")
+write.csv(round(cor_mat, 3), "diagnostic_correlation_VCI_components_AGB.csv")
+
+cor_vars1<- data_flo[, cor_vars]
+colnames(cor_vars1)<-c("SR", "$ CV[DBH]", "$ CV[H]", "Dens", "AGB")
+cor_vars1 <- cor_vars1[, c("SR", "$ CV[DBH]", "$ CV[H]", "Dens", "AGB")]
+Afnct1 <- cor(cor_vars1, use = "complete.obs")
+testRes1 = cor.mtest(cor_vars1, conf.level = 0.95)
+
+#Plotting correlation matrix
+tiff("corr_vci_agb.tiff", width = 6.2, height = 6.0, units = "in", res = 600, compression = "lzw")
+corrplot(Afnct1, p.mat = testRes1$p, method = 'circle', type = 'lower', insig='blank',
+         order = "original", diag = FALSE)$corrPos -> p2
+text(p2$x, p2$y, round(p2$corr, 1), cex = 0.8)
+dev.off()
+
+
+
+
+#------------------------------------------------------------------------------#
+# 5. Constructing main and alternative vegetation complexity indices
+#------------------------------------------------------------------------------#
+
+############# Helper function for min-max transformation
+minmax <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (diff(rng) == 0) return(rep(0, length(x)))
+  (x - rng[1]) / diff(rng)
+}
+
+############# Helper function for scaling
+safe_scale <- function(x) as.numeric(scale(x, center = TRUE, scale = TRUE))
+
+############# Helper function for aligning PC1
+# Note: PCA axes are arbitrary in sign. Align PC1 so larger values mean greater
+# complexity relative to the submitted sum index.
+
+align_pc_sign <- function(pc, reference) {
+  if (cor(pc, reference, use = "pairwise.complete.obs") < 0) -pc else pc}
+
+
+############# Main VCI used for the analysis (equal weight sum of all 4 metrics)
+data_flo <- data_flo |>
+  mutate(
+    rich_mm     = minmax(rich),
+    cvdbh_mm    = minmax(cvdbh),
+    cvheight_mm = minmax(cvheight),
+    dens_mm     = minmax(dens),
+
+    vci_sum_raw = rich_mm + cvdbh_mm + cvheight_mm + dens_mm,
+    vci_sum     = safe_scale(vci_sum_raw),
+
+############# Group-balanced VCI (VCI_GR)
+# Note: species receives 50%; structural composition metrics receives 50%, 
+# calculated as the mean of DBH CV, height CV and density.
+    vci_group_balanced_raw = 0.5 * rich_mm + 0.5 * ((cvdbh_mm + cvheight_mm + dens_mm) / 3),
+    vci_group_balanced     = safe_scale(vci_group_balanced_raw) )
+
+
+############# PCA-based VCI (VCI_PCA)
+pca_vci <- prcomp(data_flo[, c("rich_mm", "cvdbh_mm", "cvheight_mm", "dens_mm")],
+                  center = TRUE, scale. = TRUE)
+data_flo$vci_pca <- safe_scale(align_pc_sign(pca_vci$x[, 1], data_flo$vci_sum))
+#data_flo$vci_pca_raw <-align_pc_sign(pca_vci$x[, 1], data_flo$vci_sum)
+
+
+############# PCA-weighted additive VCI (PCA_WPCA)
+# Note: this Uses absolute PC1 loadings as objective weights. This remains additive
+# but avoids arbitrary equal weighting. Weights are normalized to sum to one.
+w_vci <- abs(pca_vci$rotation[, 1])
+w_vci <- w_vci / sum(w_vci)
+
+data_flo <- data_flo |>
+  mutate(
+    vci_pca_weighted_raw = w_vci["rich_mm"] * rich_mm +
+                           w_vci["cvdbh_mm"] * cvdbh_mm +
+                           w_vci["cvheight_mm"] * cvheight_mm +
+                           w_vci["dens_mm"] * dens_mm,
+    vci_pca_weighted = safe_scale(vci_pca_weighted_raw) )
+
+############# Diagnostics for alternative indices
+write.csv(as.data.frame(pca_vci$rotation[, 1, drop = FALSE]),
+          "diagnostic_PCA_loadings_VCI.csv")
+write.csv(data.frame(component = names(w_vci), weight = as.numeric(w_vci)),
+          "diagnostic_PCA_weights_VCI.csv", row.names = FALSE)
+
+############# Organizing all VCIs and checking correlations among them
+index_vars <- c("vci_sum", "vci_pca", "vci_pca_weighted", "vci_group_balanced")
+
+index_cor <- data_flo |>
+  select(any_of(index_vars)) |>
+  cor(use = "pairwise.complete.obs")
+write.csv(round(index_cor, 3), "diagnostic_correlation_alternative_indices.csv")
+
+
+
+
+#------------------------------------------------------------------------------#
+# 6. Pearson correlations Fig. S2
+#------------------------------------------------------------------------------#
+# Note: Fig.S1 were generated using raw original data and can not be reproduced
+#       using data_flo. Only Fig. S2 can be reproduced
+
+tiff("figS2.tiff", width = 8, height = 8, units = "in", res = 1000)
+par(cex = 0.5)
+
+data2.cor=data_flo[c("hmod", "ai", "clay60", "fdis", "wd", "hm", "sla","ldmc", "lcc",
+                     "lnc", "sesmpd", "agb", "vci_sum", "vci_pca", "vci_pca_weighted",
+                     "vci_group_balanced")]
+colnames(data2.cor)<-c("$ H[MOD]", "AI", "Clay", "$ F[DIS]", "$ CWM[WD]", "$ CWM[HMAX]",
+                       "$ CWM[SLA]", "$ CWM[LDMC]", "$ CWM[LCC]", "$ CWM[LNC]", "sesMPD", 
+                       "AGB", "VCI", "$ VCI[PCA]", "$ VCI[WPCA]", "$ VCI[GR]")
+
+Afnct1 = cor(data2.cor)
+testRes1 = cor.mtest(data2.cor, conf.level = 0.95)
+
+corrplot(Afnct1, p.mat = testRes1$p, method = 'circle', type = 'lower', insig='blank',
+         order = 'AOE', diag = FALSE)$corrPos -> p2
+text(p2$x, p2$y, round(p2$corr, 1), cex = 0.6)
+
+dev.off()
+
+
+
+
+
+#------------------------------------------------------------------------------#
+# 7. Model-diagnostic helper functions
+#------------------------------------------------------------------------------#
+
+### Helper function for lme
+fixed_formula_lm <- function(model) {lm(formula(model), data = model$data)}
+
+### Helper function for computing Variance Inflation Factor (VIF)
+safe_vif_lme <- function(model) {out <- tryCatch({
+    v <- car::vif(fixed_formula_lm(model))
+    if (is.matrix(v)) v <- v[, "GVIF^(1/(2*Df))"]
+    data.frame(term = names(v), VIF = as.numeric(v), row.names = NULL)
+  }, error = function(e) {
+    data.frame(term = NA_character_, VIF = NA_real_)})
+  out}
+
+### Helper function for model diagnostic
+diagnose_lme <- function(model, model_name) {
+  res <- residuals(model, type = "normalized")
+  shapiro_p <- if (length(res) >= 3 && length(res) <= 5000) shapiro.test(res)$p.value else NA_real_
+  vif_tbl <- safe_vif_lme(model)
+  infl <- data.frame(model = model_name, fitted = fitted(model), residual = res,
+    abs_std_resid = abs(as.numeric(scale(res)))) |>
+    filter(abs_std_resid > 3)
+  list(
+    model_name = model_name,
+    shapiro_residual_p = shapiro_p,
+    vif = vif_tbl,
+    residual_outliers = infl)}
+
+### Helper function for selecting with VIF <= 5
+vif_ok_lme <- function(model, threshold = 5) {
+  v <- safe_vif_lme(model)
+  if (all(is.na(v$VIF))) return(FALSE)
+  all(v$VIF < threshold, na.rm = TRUE)}
+
+
+
+
+
+#------------------------------------------------------------------------------#
+# 8. Model selection with VIF filtering and model averaging
+#------------------------------------------------------------------------------#
+
+## Helper function for running "dredge"
+run_dredge_with_vif_filter <- function(response, predictors, data, random = "~1|vegetation/plot_ID",
+                                       vif_threshold = 5, delta_threshold = 2) {
+  form <- as.formula(paste(response, "~", paste(predictors, collapse = " + ")))
+  global_model <- nlme::lme(form, random = as.formula(random), data = data, method = "ML")
+  dd <- MuMIn::dredge(global_model, beta = "sd", rank = "AICc", trace = FALSE, REML = FALSE)
+  mods <- MuMIn::get.models(dd, subset = TRUE)
+  ok <- purrr::map_lgl(mods, vif_ok_lme, threshold = vif_threshold)
+  dd$vif_ok <- ok
+  dd$delta_AICc <- dd$delta
+  viable <- dd |> as.data.frame() |> tibble::rownames_to_column("model_id") |> filter(vif_ok)
+  write.csv(viable, paste0("dredge_VIF_filtered_", response, ".csv"), row.names = FALSE)
+
+  top_ids <- as.numeric(viable$model_id[viable$delta_AICc <= delta_threshold])
+  if (length(top_ids) == 0) top_ids <- as.numeric(viable$model_id[1])
+  top_models <- mods[top_ids]
+  avg_model <- tryCatch(MuMIn::model.avg(top_models), error = function(e) NULL)
+
+  list(global_model = global_model, dredge_table = dd, viable_table = viable,
+       top_models = top_models, model_average = avg_model)}
+
+
+## Helper function for extracting VIF from top models
+extract_vif_from_top_models <- function(top_mods,
+    out_file_full = "VIF_top_models_used_for_model_averaging.csv",
+    out_file_summary = "VIF_summary_top_models_used_for_model_averaging.csv") {
+    # Full VIF table for each top model
+    vif_tbl <- purrr::imap_dfr(top_mods, function(m, i) {
+    component_response <- tryCatch(all.vars(stats::formula(m))[1], error = function(e) NA_character_)
+    model_formula <- tryCatch(paste(deparse(stats::formula(m)), collapse = " "), error = function(e) NA_character_)
+    safe_vif_lme(m) |> dplyr::mutate(top_model = i, component_response = component_response, model_formula = model_formula)})
+  
+    # Summary VIF table across top models
+    vif_summary <- vif_tbl |>
+    dplyr::filter(!is.na(VIF)) |>
+    dplyr::group_by(term) |>
+    dplyr::summarise(
+      min_VIF = min(VIF, na.rm = TRUE),
+      mean_VIF = mean(VIF, na.rm = TRUE),
+      max_VIF = max(VIF, na.rm = TRUE),
+      n_models = dplyr::n_distinct(top_model),
+      .groups = "drop") |>
+    dplyr::arrange(dplyr::desc(max_VIF))
+  
+  # Export both tables
+  write.csv(vif_tbl, out_file_full, row.names = FALSE)
+  write.csv(vif_summary, out_file_summary, row.names = FALSE)
+  
+  # Return both tables
+  list(full = vif_tbl, summary = vif_summary)}
+
+
+######----------- Selecting optimal CWM variable for soil organic carbon (SOC)
+
+cwm_predictors <- c("wd", "hm", "sla", "ldmc", "lcc", "lnc")
+
+##### 0-60 cm
+socall_dredge <- run_dredge_with_vif_filter("socall", cwm_predictors, data_flo)
+socall_avg <-socall_dredge$model_average # average model
+summary(socall_avg)
+sw(socall_avg) 
+
+# VIF for fixed factors of all top models
+vif_socall <- extract_vif_from_top_models(
+  socall_dredge$top_models,
+  out_file_full = "VIF_socall_top_models.csv",
+  out_file_summary = "VIF_socall_top_models_summary.csv")
+
+
+##### 0-20 cm
+soc20_dredge <- run_dredge_with_vif_filter("soc20", cwm_predictors, data_flo)
+soc20_avg <-soc20_dredge$model_average
+summary(soc20_avg)
+sw(soc20_avg)
+
+# VIF for fixed factors of top models 
+vif_soc20 <- extract_vif_from_top_models(
+  soc20_dredge$top_models,
+  out_file_full = "VIF_soc20_top_models.csv",
+  out_file_summary = "VIF_soc20_top_models_summary.csv")
+
+
+##### 20-40 cm
+soc40_dredge <- run_dredge_with_vif_filter("soc40", cwm_predictors, data_flo)
+soc40_avg <-soc40_dredge$model_average
+summary(soc40_avg)
+sw(soc40_avg)
+
+# VIF for fixed factors of top models 
+vif_soc40 <- extract_vif_from_top_models(
+  soc40_dredge$top_models,
+  out_file_full = "VIF_soc40_top_models.csv",
+  out_file_summary = "VIF_soc40_top_models_summary.csv")
+
+
+##### 40-60 cm
+soc60_dredge <- run_dredge_with_vif_filter("soc60", cwm_predictors, data_flo)
+soc60_avg <-soc60_dredge$model_average
+summary(soc60_avg)
+sw(soc60_avg)
+
+# VIF for fixed factors of top models 
+vif_soc60 <- extract_vif_from_top_models(
+  soc60_dredge$top_models,
+  out_file_full = "VIF_soc60_top_models.csv",
+  out_file_summary = "VIF_soc60_top_models_summary.csv")
+
+
+
+######------------- Selecting optimal CWM variable for soil total nitrogen (STN)
+
+##### 0-60 cm
+stnall_dredge <- run_dredge_with_vif_filter("stnall", cwm_predictors, data_flo)
+stnall_avg <-stnall_dredge$model_average
+summary(stnall_avg)
+sw(stnall_avg)
+
+# VIF for fixed factors of top models 
+vif_stnall <- extract_vif_from_top_models(
+  stnall_dredge$top_models,
+  out_file_full = "VIF_stnall_top_models.csv",
+  out_file_summary = "VIF_stnall_top_models_summary.csv")
+
+##### 0-20 cm
+stn20_dredge <- run_dredge_with_vif_filter("stn20", cwm_predictors, data_flo)
+stn20_avg <-stn20_dredge$model_average
+summary(stn20_avg)
+sw(stn20_avg)
+
+# VIF for fixed factors of top models 
+vif_stn20 <- extract_vif_from_top_models(
+  stn20_dredge$top_models,
+  out_file_full = "VIF_stn20_top_models.csv",
+  out_file_summary = "VIF_stn20_top_models_summary.csv")
+
+
+##### 20-40 cm
+stn40_dredge <- run_dredge_with_vif_filter("stn40", cwm_predictors, data_flo)
+stn40_avg <-stn40_dredge$model_average
+summary(stn40_avg)
+summary(stn40_best <- stn40_dredge$top_models[[1]])
+safe_vif_lme(stn40_best)
+
+##### 40-60 cm
+stn60_dredge <- run_dredge_with_vif_filter("stn60", cwm_predictors, data_flo)
+stn60_avg <-stn60_dredge$model_average
+summary(stn60_avg)
+sw(stn60_avg)
+
+# VIF for fixed factors of top models 
+vif_stn60 <- extract_vif_from_top_models(
+  stn60_dredge$top_models,
+  out_file_full = "VIF_stn60_top_models.csv",
+  out_file_summary = "VIF_stn60_top_models_summary.csv")
+
+
+
+
+######------------- Selecting optimal CWM variable for SOC:STN (SCN)
+
+##### 0-60 cm
+scnall_dredge <- run_dredge_with_vif_filter("scnall", cwm_predictors, data_flo)
+scnall_avg <-scnall_dredge$model_average
+summary(scnall_avg)
+sw(scnall_avg)
+
+# VIF for fixed factors of top models 
+vif_scnall <- extract_vif_from_top_models(
+  scnall_dredge$top_models,
+  out_file_full = "VIF_scnall_top_models.csv",
+  out_file_summary = "VIF_scnall_top_models_summary.csv")
+
+
+##### 0-20 cm
+scn20_dredge <- run_dredge_with_vif_filter("scn20", cwm_predictors, data_flo)
+scn20_avg <-scn20_dredge$model_average
+summary(scn20_avg)
+sw(scn20_avg)
+
+vif_scn20 <- extract_vif_from_top_models(
+  scn20_dredge$top_models,
+  out_file_full = "VIF_scn20_top_models.csv",
+  out_file_summary = "VIF_scn20_top_models_summary.csv")
+
+
+##### 20-40 cm
+scn40_dredge <- run_dredge_with_vif_filter("scn40", cwm_predictors, data_flo)
+scn40_avg <-scn40_dredge$model_average
+summary(scn40_avg)
+summary(scn40_best <- scn40_dredge$top_models[[1]])
+
+
+##### 40-60 cm
+scn60_dredge <- run_dredge_with_vif_filter("scn60", cwm_predictors, data_flo)
+scn60_avg <-scn60_dredge$model_average
+summary(scn60_avg)
+sw(scn60_avg)
+
+vif_scn60 <- extract_vif_from_top_models(
+  scn60_dredge$top_models,
+  out_file_full = "VIF_scn60_top_models.csv",
+  out_file_summary = "VIF_scn60_top_models_summary.csv")
+
+
+
+
+
+
+
+#------------------------------------------------------------------------------#
+# 9. pSEM builder for main forward conceptual models, calculate relative variable
+#    contribution and plotting them
+#------------------------------------------------------------------------------#
+
+# Selected CWM trait per response/depth, matching the submitted model structure
+model_config <- tibble::tribble(
+  ~family, ~depth_label, ~response, ~clay,    ~cwm,
+  "SOC",  "0-60 cm",    "socall",  "clayall", "lnc",
+  "SOC",  "0-20 cm",    "soc20",   "clay20",  "hm",
+  "SOC",  "20-40 cm",   "soc40",   "clay40",  "lnc",
+  "SOC",  "40-60 cm",   "soc60",   "clay60",  "lnc",
+  "STN",  "0-60 cm",    "stnall",  "clayall", "hm",
+  "STN",  "0-20 cm",    "stn20",   "clay20",  "hm",
+  "STN",  "20-40 cm",   "stn40",   "clay40",  "wd",
+  "STN",  "40-60 cm",   "stn60",   "clay60",  "lnc",
+  "SCN",  "0-60 cm",    "scnall",  "clayall", "lcc",
+  "SCN",  "0-20 cm",    "scn20",   "clay20",  "lcc",
+  "SCN",  "20-40 cm",   "scn40",   "clay40",  "wd",
+  "SCN",  "40-60 cm",   "scn60",   "clay60",  "lcc"
+)
+
+# Helper function for fitting lme
+fit_lme <- function(formula_text, data) {
+  fixed_formula <- stats::as.formula(formula_text)
+  model <- nlme::lme(
+    fixed = fixed_formula,
+    random = ~ 1 | vegetation / plot_ID,
+    data = data,
+    method = "ML",
+    na.action = na.fail,
+    control = nlme::lmeControl(opt = "optim"))
+  model$call$fixed <- fixed_formula
+  model}
+
+
+# Helper function for building main pSEM
+build_main_psem <- function(data, index_var, response, clay, cwm) {
+  psem(
+    fit_lme(paste(index_var, "~ ai + hmod +", clay), data),
+    fit_lme(paste("fdis ~ ai + hmod +", clay, "+", index_var), data),
+    fit_lme(paste(cwm, "~ ai + hmod +", clay, "+", index_var), data),
+    fit_lme(paste("sesmpd ~ ai + hmod +", clay, "+", index_var), data),
+    fit_lme(paste("agb ~ ai + hmod +", clay, "+", index_var, "+", cwm, "+ fdis + sesmpd"), data),
+    fit_lme(paste(response, "~ ai + hmod +", clay, "+", index_var, "+", cwm, "+ fdis + sesmpd + agb"), data))}
+
+
+# Candidate indices for sensitivity analysis.
+sensitivity_indices <- c(
+  "vci_sum",                      # main renamed VCI, richness-inclusive
+  "vci_pca",                      # PCA-based VCI including richness
+  "vci_pca_weighted",             # PCA-weighted additive VCI
+  "vci_group_balanced"            # equal composition/structure group weights
+)
+
+
+############--------------------------- Relative contribution functions for pSEM
+
+# Helper function for getting pSEM coefficients
+get_coefs <- function(sem_model) {
+  cf <- piecewiseSEM::coefs(sem_model, standardize = "scale") |> as.data.frame()
+  estimate_col <- if ("Std.Estimate" %in% names(cf)) "Std.Estimate" else "Estimate"
+  p_col <- if ("P.Value" %in% names(cf)) "P.Value" else if ("P" %in% names(cf)) "P" else NA_character_
+
+  out <- data.frame(
+    response  = as.character(cf[["Response"]]),
+    predictor = as.character(cf[["Predictor"]]),
+    estimate  = as.numeric(cf[[estimate_col]]),
+    p_value   = if (!is.na(p_col)) as.numeric(cf[[p_col]]) else NA_real_,
+    stringsAsFactors = FALSE
+  )
+  out}
+
+# Helper function to get all paths
+all_paths_to_target <- function(edges, target, max_depth = 6) {
+  paths <- list()
+  starts <- setdiff(unique(edges$from), target)
+
+  extend_path <- function(current_path, current_node) {
+    if (length(current_path) > max_depth) return(NULL)
+    next_edges <- edges |> filter(from == current_node)
+    if (nrow(next_edges) == 0) return(NULL)
+
+    for (i in seq_len(nrow(next_edges))) {
+      nxt <- next_edges$to[i]
+      # avoid cycles
+      if (nxt %in% current_path) next
+      new_path <- c(current_path, nxt)
+      if (nxt == target) {
+        paths[[length(paths) + 1]] <<- new_path
+      } else {
+        extend_path(new_path, nxt)}}}
+  for (s in starts) extend_path(s, s)
+  paths}
+
+
+# Helper function for calculating relative contribution
+relative_contribution_from_psem <- function(sem_model, target, p_cutoff = 0.05,
+                                            use_only_significant = TRUE) {
+  cf <- get_coefs(sem_model)
+  cf <- cf |>
+    filter(!predictor %in% c("(Intercept)", "~~"), !is.na(estimate))
+  if (use_only_significant) {
+    cf <- cf |> filter(!is.na(p_value), p_value < p_cutoff)}
+
+  edges <- cf |>
+    transmute(from = predictor, to = response, beta = estimate)
+  paths <- all_paths_to_target(edges, target = target)
+  if (length(paths) == 0) {
+    return(list(paths = data.frame(), total_effects = data.frame()))}
+
+  path_tbl <- purrr::map_dfr(paths, function(p) {
+    betas <- purrr::map2_dbl(p[-length(p)], p[-1], function(a, b) {
+      edges |> filter(from == a, to == b) |> slice(1) |> pull(beta)})
+    data.frame(
+      source = p[1],
+      target = target,
+      path = paste(p, collapse = " -> "),
+      n_edges = length(betas),
+      path_effect = prod(betas),
+      stringsAsFactors = FALSE) })
+
+  total_effects <- path_tbl |>
+    group_by(source) |>
+    summarise(total_effect = sum(path_effect, na.rm = TRUE), .groups = "drop") |>
+    mutate(relative_contribution = abs(total_effect) / sum(abs(total_effect), na.rm = TRUE) * 100) |>
+    arrange(desc(relative_contribution))
+  list(paths = path_tbl, total_effects = total_effects)
+}
+
+
+# Helper function to label predictor variables
+label_predictor_group <- function(x, index_label = "VCI") {
+  dplyr::case_when(
+    x %in% c("vci_sum", "vci_pca", "vci_pca_weighted", "vci_group_balanced",
+             "rich_mm", "cvdbh_mm", "cvheight_mm", "dens_mm") ~ index_label,
+    x == "agb" ~ "AGB",
+    x == "fdis" ~ "FDIS",
+    x == "sesmpd" ~ "sesMPD",
+    x %in% c("wd", "hm", "sla", "ldmc", "lcc", "lnc") ~ "CWM",
+    stringr::str_detect(x, "^clay") ~ "Clay",
+    x == "ai" ~ "AI",
+    x == "hmod" ~ "HMOD",
+    TRUE ~ x
+  )
+}
+
+
+plot_relative_contribution <- function(rc_tbl, family_name, out_file, show_legend = TRUE) {
+  
+  custom_colors <- c(
+    "AGB"    = "#4E95D9",
+    "sesMPD" = "#FFC000",
+    "CWM"    = "#8ED973",
+    "FDIS"   = "#A9D18E",
+    "VCI"    = "#FFFF00",
+    "Clay"   = "#C67B28",
+    "AI"     = "#C261E5",
+    "HMOD"   = "#FF5353"
+  )
+  custom_labels_parsed <- c(
+    "AGB"    = "AGB",
+    "sesMPD" = "sesMPD",
+    "CWM"    = "CWM",
+    "FDIS"   = "F[DIS]",
+    "VCI"    = "VCI",
+    "Clay"   = "Clay",
+    "AI"     = "AI",
+    "HMOD"   = "H[MOD]"
+  )
+  
+  rc_tbl <- rc_tbl |>
+    dplyr::mutate(
+      depth_label = factor(depth_label, levels = c("0-60 cm", "0-20 cm", "20-40 cm", "40-60 cm")),
+      PredictorGroup = factor(PredictorGroup, levels = c("AGB", "sesMPD", "CWM", "FDIS", "VCI", "Clay", "AI", "HMOD"))) |>
+    dplyr::filter(
+      !is.na(relative_contribution),
+      relative_contribution > 0,
+      !is.na(PredictorGroup)) |>
+    droplevels()
+  
+  active_groups <- levels(rc_tbl$PredictorGroup)
+  
+  p <- ggplot2::ggplot(
+    rc_tbl,
+    ggplot2::aes(
+      x = depth_label,
+      y = relative_contribution,
+      fill = PredictorGroup)) +
+    ggplot2::geom_bar(
+      stat = "identity",
+      position = "stack",
+      width = 0.55) +
+    ggplot2::scale_fill_manual(
+      values = custom_colors,
+      breaks = active_groups,
+      labels = function(x) parse(text = custom_labels_parsed[x]),
+      drop = TRUE) +
+    ggplot2::labs(x = "Layer",y = "Relative contribution (%)", title = family_name, fill = "Predictor") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      axis.title = ggplot2::element_text(face = "bold"),
+      axis.text = ggplot2::element_text(face = "bold"),
+      plot.title = ggplot2::element_text(face = "bold"),
+      panel.grid.minor = ggplot2::element_blank(),
+      axis.line = ggplot2::element_line(linewidth = 0.5),
+      legend.position = ifelse(show_legend, "right", "none"))
+  
+  ggplot2::ggsave(out_file, p, width = 6.2, height = 5.0, dpi = 600, compression = "lzw")
+  p
+}
+
+
+
+
+#------------------------------------------------------------------------------#
+# 10. Fit pSEMs for main and sensitivity VCIs (Tables S4-S5,S8, S10, S12-S16 and
+#     Figs. 2, 5, 6, S4-S6
+#------------------------------------------------------------------------------#
+
+# Helper function for running pSEM
+
+# Note: this runs pSEM with diagnostic test (residual Shapiro test, VIF table, 
+# and residual outlier detection) performed by the function diagnose_lme
+
+run_all_psems1 <- function(indices = sensitivity_indices, data = data_flo,
+                          p_cutoff = 0.05, use_only_significant = TRUE) {
+  all_results <- list()
+  all_rc <- list()   # store relative contribution
+  all_fit <- list()  # store model fit statistics
+  all_coef <- list() # store path coefficients
+  all_vif <- list()  # store vif output
+  all_diag <- list() # store dignostic output
+  all_r2 <- list()   # store marginal and conditional R2
+  
+  for (idx in indices) {
+    for (i in seq_len(nrow(model_config))) {cfg <- model_config[i, ]
+      
+      model_id <- paste(cfg$family, cfg$depth_label, idx, sep = "_") |>
+        stringr::str_replace_all("[^A-Za-z0-9]+", "_")
+      
+      message("Fitting: ", model_id)
+      
+      sem <- build_main_psem(data, idx, cfg$response, cfg$clay, cfg$cwm)
+      sm <- summary(sem)
+      cf <- get_coefs(sem)
+      
+      rc <- relative_contribution_from_psem(sem, target = cfg$response, 
+            p_cutoff = p_cutoff, use_only_significant = use_only_significant)
+      
+      if (is.list(rc) && !is.null(rc$total_effects) && nrow(rc$total_effects) > 0) {
+        all_rc[[model_id]] <- rc$total_effects |>
+          dplyr::mutate(family = cfg$family, depth_label = cfg$depth_label,
+            response = cfg$response, index = idx,
+            PredictorGroup = label_predictor_group(source, index_label = "VCI")) |>
+          dplyr::group_by(family, depth_label, response, index, PredictorGroup) |>
+          dplyr::summarise(total_effect = sum(total_effect, na.rm = TRUE),
+            relative_contribution = sum(relative_contribution, na.rm = TRUE), .groups = "drop")
+        
+        write.csv(rc$paths, paste0("paths_", model_id, ".csv"), row.names = FALSE )}
+      
+      # ------------------------------------------------------------
+      # Extract component lme models from pSEM object
+      # ------------------------------------------------------------
+      mods <- if (!is.null(sem$modelList)) {
+        sem$modelList} else {sem}
+            mods <- mods[purrr::map_lgl(mods, ~ inherits(.x, "lme"))]
+      
+      # ------------------------------------------------------------
+      # VIF for each component lme model
+      # ------------------------------------------------------------
+      vif_tbl <- purrr::imap_dfr(mods, function(m, j) {
+        component_response <- tryCatch(all.vars(stats::formula(m))[1], error = function(e) NA_character_)
+        component_formula <- tryCatch(paste(deparse(stats::formula(m)), collapse = " "), error = function(e) NA_character_)
+        
+        safe_vif_lme(m) |>
+        dplyr::mutate(component_model = as.character(j), component_response = component_response,
+        component_formula = component_formula, model_id = model_id, family = cfg$family,
+        depth_label = cfg$depth_label,
+        response = cfg$response, index = idx)})
+      if (nrow(vif_tbl) == 0) {warning("No VIF values extracted for model: ", model_id)}
+      
+      # ------------------------------------------------------------
+      # Residual diagnostics for each component lme model
+      # ------------------------------------------------------------
+      diag_tbl <- purrr::imap_dfr(mods, function(m, j) {
+        
+        component_response <- tryCatch(all.vars(stats::formula(m))[1], error = function(e) NA_character_)
+        
+        component_formula <- tryCatch(paste(deparse(stats::formula(m)), collapse = " "),
+        error = function(e) NA_character_)
+        
+        dg <- diagnose_lme(model = m, model_name = paste0(model_id, "_component_", j))
+        
+        data.frame(
+          model_id = model_id,
+          family = cfg$family,
+          depth_label = cfg$depth_label,
+          response = cfg$response,
+          index = idx,
+          component_model = as.character(j),
+          component_response = component_response,
+          component_formula = component_formula,
+          shapiro_residual_p = dg$shapiro_residual_p,
+          n_residual_outliers_abs_z_gt_3 = nrow(dg$residual_outliers),
+          stringsAsFactors = FALSE)})
+      
+      if (nrow(diag_tbl) == 0) {
+        warning("No residual diagnostics extracted for model: ", model_id)}
+      
+      # ------------------------------------------------------------
+      # Marginal and conditional R2 for each component lme model
+      # ------------------------------------------------------------
+      r2_tbl <- purrr::imap_dfr(mods, function(m, j) {
+        component_response <- tryCatch(all.vars(stats::formula(m))[1], error = function(e) NA_character_)
+        component_formula <- tryCatch(paste(deparse(stats::formula(m)), collapse = " "), error = function(e) NA_character_)
+        
+        r2_out <- tryCatch(piecewiseSEM::rsquared(m), error = function(e) NULL)
+        
+        if (is.null(r2_out)) {
+          return(data.frame(
+            model_id = model_id,
+            family = cfg$family,
+            depth_label = cfg$depth_label,
+            response = cfg$response,
+            index = idx,
+            component_model = as.character(j),
+            component_response = component_response,
+            component_formula = component_formula,
+            marginal_R2 = NA_real_,
+            conditional_R2 = NA_real_,
+            stringsAsFactors = FALSE))}
+        
+        data.frame(
+          model_id = model_id,
+          family = cfg$family,
+          depth_label = cfg$depth_label,
+          response = cfg$response,
+          index = idx,
+          component_model = as.character(j),
+          component_response = component_response,
+          component_formula = component_formula,
+          marginal_R2 = r2_out$Marginal,
+          conditional_R2 = r2_out$Conditional,
+          stringsAsFactors = FALSE)})
+      
+      if (nrow(r2_tbl) == 0) {
+        warning("No R2 values extracted for model: ", model_id)}
+      
+      # ------------------------------------------------------------
+      # Store outputs
+      # ------------------------------------------------------------
+      all_results[[model_id]] <- sem
+      
+      all_fit[[model_id]] <- data.frame(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label,
+        response = cfg$response,
+        index = idx,
+        Fisher_C = sm$Cstat$Fisher.C,
+        df = sm$Cstat$df,
+        C_p_value = sm$Cstat$P.Value,
+        AIC = tryCatch(AIC(sem), error = function(e) NA_real_))
+      
+      all_coef[[model_id]] <- cf |>
+        dplyr::mutate(
+          model_id = model_id,
+          family = cfg$family,
+          depth_label = cfg$depth_label,
+          response_variable = cfg$response,
+          index = idx)
+      
+      all_vif[[model_id]] <- vif_tbl
+      all_diag[[model_id]] <- diag_tbl
+      all_r2[[model_id]] <- r2_tbl} }
+  
+  rc_tbl <- dplyr::bind_rows(all_rc)
+  fit_tbl <- dplyr::bind_rows(all_fit)
+  coef_tbl <- dplyr::bind_rows(all_coef)
+  vif_tbl <- dplyr::bind_rows(all_vif)
+  diag_tbl <- dplyr::bind_rows(all_diag)
+  r2_tbl <- dplyr::bind_rows(all_r2)
+  
+  write.csv(rc_tbl, "relative_contributions_all_indices.csv", row.names = FALSE)
+  write.csv(fit_tbl, "pSEM_fit_all_indices.csv", row.names = FALSE)
+  write.csv(coef_tbl, "pSEM_coefficients_all_indices.csv", row.names = FALSE)
+  write.csv(vif_tbl, "pSEM_VIF_all_indices.csv", row.names = FALSE)
+  write.csv(diag_tbl, "pSEM_lme_diagnostics_all_indices.csv", row.names = FALSE)
+  write.csv(r2_tbl, "pSEM_lme_R2_all_indices.csv", row.names = FALSE)
+  
+  list(models = all_results, relative_contributions = rc_tbl,     fit = fit_tbl,
+    coefficients = coef_tbl, vif = vif_tbl, diagnostics = diag_tbl, r2 = r2_tbl)}
+
+
+###### Run main + sensitivity models
+sem_results <- run_all_psems1()
+
+###### Save relative contribution plots (Fig. 4)
+rc_main <- sem_results$relative_contributions |> filter(index == "vci_sum")
+plot_relative_contribution(filter(rc_main, family == "SOC"), "(a) Soil organic carbon (SOC) stock", "SOC_relative_contribution_VCI.tiff", show_legend = TRUE)
+plot_relative_contribution(filter(rc_main, family == "STN"), "(b) Soil total nitrogen (STN) stock", "STN_relative_contribution_VCI.tiff", show_legend = TRUE)
+plot_relative_contribution(filter(rc_main, family == "SCN"), "(c) SOC:STN ratio", "SCN_relative_contribution_VCI.tiff", show_legend = TRUE)
+
+
+##### Sensitivity summary: compare the relative contribution for VCIs across all
+##### alternative indices
+sensitivity_summary <- sem_results$relative_contributions |>
+  filter(PredictorGroup == "VCI") |> arrange(family, depth_label, index)
+write.csv(sensitivity_summary, "sensitivity_summary_VCI_relative_contribution.csv", row.names = FALSE)
+
+
+
+
+
+#------------------------------------------------------------------------------#
+# 11. Cluster-bootstrapping of direct, indirect and total effects from main pSEM
+#------------------------------------------------------------------------------#
+
+# Important:
+# - Bootstrap resampling is done at the plot_ID level.
+# - Outliers are not removed.
+# - Direct and indirect effects are calculated from standardized pSEM coefficients.
+# - Indirect effects are products of coefficients along directed paths.
+# - Relative-contribution calculations elsewhere remain significant-path-only.
+
+
+##### Helper function to build the bootstrapping data
+make_cluster_boot_data <- function(data, cluster_var = "plot_ID") {
+  clusters <- unique(as.character(data[[cluster_var]]))
+  sampled_clusters <- sample(clusters, size = length(clusters), replace = TRUE)
+  
+  boot_dat <- purrr::map2_dfr(sampled_clusters, seq_along(sampled_clusters), function(cl, i) {
+    d <- data[data[[cluster_var]] == cl, , drop = FALSE]
+    d[[cluster_var]] <- paste0(as.character(d[[cluster_var]]), "__boot", i)
+    d})
+  
+  boot_dat[[cluster_var]] <- as.factor(boot_dat[[cluster_var]])
+  if ("vegetation" %in% names(boot_dat)) boot_dat$vegetation <- as.factor(boot_dat$vegetation)
+  boot_dat}
+
+
+
+##### Helper function to extract path-specific effects from pSEM
+path_specific_effects_from_psem <- function(sem_model, target,
+                                            focal_sources = NULL,
+                                            use_only_significant = FALSE,
+                                            p_cutoff = 0.05,
+                                            max_depth = 6) {
+  
+  cf <- get_coefs(sem_model) |>
+    dplyr::filter(!predictor %in% c("(Intercept)", "~~"), !is.na(estimate))
+  
+  if (use_only_significant) {cf <- cf |>
+      dplyr::filter(!is.na(p_value), p_value < p_cutoff)}
+  
+  edges <- cf |>
+    dplyr::transmute(from = predictor, to = response, beta = estimate)
+  
+  paths <- all_paths_to_target(edges = edges, target = target, max_depth = max_depth)
+  
+  if (length(paths) == 0) {return(data.frame())  }
+  
+  path_tbl <- purrr::map_dfr(paths, function(p) {
+    
+    betas <- purrr::map2_dbl(p[-length(p)], p[-1],
+      function(a, b) {
+        edges |>
+          dplyr::filter(from == a, to == b) |>
+          dplyr::slice(1) |>
+          dplyr::pull(beta)})
+    
+    data.frame(
+      source = p[1],
+      target = target,
+      path = paste(p, collapse = " -> "),
+      n_edges = length(betas),
+      effect_type = dplyr::case_when(
+        length(betas) == 1 ~ "direct",
+        "agb" %in% p[-c(1, length(p))] ~ "agb_mediated_indirect",
+        TRUE ~ "other_indirect"),
+      path_effect = prod(betas),
+      passes_through_agb = "agb" %in% p[-c(1, length(p))],
+      stringsAsFactors = FALSE)})
+  
+  if (!is.null(focal_sources)) {path_tbl <- path_tbl |>
+      dplyr::filter(source %in% focal_sources)}
+  path_tbl}
+
+
+
+# Helper function to fix naming so that bootstrap replicates can be combined 
+# even if one path is absent in a failed/singular replicate
+
+vectorize_path_effects_for_boot <- function(path_tbl, path_names) {
+  
+  out <- setNames(rep(NA_real_, length(path_names)), path_names)
+  
+  if (nrow(path_tbl) == 0) return(out)
+  
+  for (pth in path_names) {row <- path_tbl |>
+      dplyr::filter(path == pth)
+    
+    if (nrow(row) == 1) {out[pth] <- row$path_effect}}
+  out}
+
+
+# Helper function to bootstrap path-specific indirect effects for one pSEM
+bootstrap_psem_path_specific_one_model <- function(data, index_var, response, clay, cwm,
+                                                   focal_sources = NULL,
+                                                   n_boot = 1000,
+                                                   seed = 123,
+                                                   use_only_significant = FALSE,
+                                                   p_cutoff = 0.05,
+                                                   max_depth = 6) {
+  
+  if (is.null(focal_sources)) {
+    focal_sources <- c(index_var, "agb", "ai", "hmod", clay, cwm, "fdis", "sesmpd")}
+  
+  focal_sources <- unique(focal_sources)
+  
+  set.seed(seed)
+  
+  # Original pSEM
+  original_sem <- build_main_psem(data = data, index_var = index_var, response = response, clay = clay, cwm = cwm)
+  
+  original_paths <- path_specific_effects_from_psem(
+    sem_model = original_sem,
+    target = response,
+    focal_sources = focal_sources,
+    use_only_significant = use_only_significant,
+    p_cutoff = p_cutoff,
+    max_depth = max_depth)
+  
+  if (nrow(original_paths) == 0) {
+    warning("No paths found in original model for response: ", response)
+    return(NULL)}
+  
+  path_names <- original_paths$path
+  
+  original_vector <- vectorize_path_effects_for_boot(
+    path_tbl = original_paths,
+    path_names = path_names)
+  
+  boot_mat <- matrix(NA_real_, nrow = n_boot, ncol = length(original_vector))
+  colnames(boot_mat) <- names(original_vector)
+  
+  boot_status <- data.frame(iteration = seq_len(n_boot), success = FALSE, error = NA_character_  )
+  for (b in seq_len(n_boot)) {
+  boot_dat <- make_cluster_boot_data(data = data, cluster_var = "plot_ID"    )
+    
+    res <- tryCatch({
+        boot_sem <- build_main_psem(data = boot_dat, index_var = index_var,
+        response = response, clay = clay, cwm = cwm)
+      
+      boot_paths <- path_specific_effects_from_psem(
+        sem_model = boot_sem,
+        target = response,
+        focal_sources = focal_sources,
+        use_only_significant = use_only_significant,
+        p_cutoff = p_cutoff,
+        max_depth = max_depth)
+      
+      vectorize_path_effects_for_boot(path_tbl = boot_paths, path_names = path_names)
+      
+    }, error = function(e) e)
+    
+    if (inherits(res, "error")) {
+      boot_status$success[b] <- FALSE
+      boot_status$error[b] <- conditionMessage(res)
+    } else {
+      boot_mat[b, ] <- res
+      boot_status$success[b] <- TRUE}}
+  
+  boot_summary <- summarise_boot_path_effects(
+    original_paths = original_paths,
+    boot_matrix = boot_mat,
+    conf = 0.95) |>
+    dplyr::mutate(
+      index = index_var,
+      response = response,
+      clay = clay,
+      cwm = cwm,
+      n_boot_requested = n_boot,
+      n_model_successful = sum(boot_status$success))
+  
+  list(original_paths = original_paths, bootstrap_summary = boot_summary,
+    bootstrap_replicates = as.data.frame(boot_mat), bootstrap_status = boot_status)
+}
+
+
+# Summarise path-specific bootstrap effects
+summarise_boot_path_effects <- function(original_paths, boot_matrix, conf = 0.95) {
+  alpha <- 1 - conf
+  purrr::map_dfr(colnames(boot_matrix), function(path_name) {
+    
+    vals <- boot_matrix[, path_name]
+    vals <- vals[is.finite(vals)]
+    
+    orig <- original_paths |>
+      dplyr::filter(path == path_name) |>
+      dplyr::slice(1)
+    
+    data.frame(
+      source = orig$source,
+      target = orig$target,
+      path = path_name,
+      n_edges = orig$n_edges,
+      effect_type = orig$effect_type,
+      passes_through_agb = orig$passes_through_agb,
+      original_estimate = orig$path_effect,
+      bootstrap_mean = if (length(vals) > 0) mean(vals, na.rm = TRUE) else NA_real_,
+      bootstrap_sd = if (length(vals) > 1) sd(vals, na.rm = TRUE) else NA_real_,
+      ci_lower = if (length(vals) > 10) {
+        stats::quantile(vals, probs = alpha / 2, na.rm = TRUE)
+      } else {
+        NA_real_},
+      ci_upper = if (length(vals) > 10) {
+        stats::quantile(vals, probs = 1 - alpha / 2, na.rm = TRUE)
+      } else {
+        NA_real_},
+      n_successful = length(vals),
+      stringsAsFactors = FALSE)})
+}
+
+
+# Run path-specific bootstrap across all depths
+run_psem_path_specific_bootstrap_all_depths <- function(data = data_flo,
+                                                        config = model_config,
+                                                        index_var = "vci_sum",
+                                                        n_boot = 1000,
+                                                        seed = 123,
+                                                        max_depth = 6,
+                                                        out_prefix = "pSEM_path_specific") {
+  
+  boot_summaries <- list()
+  boot_originals <- list()
+  boot_statuses <- list()
+  
+  for (i in seq_len(nrow(config))) {
+    
+    cfg <- config[i, ]
+    
+    model_id <- paste(cfg$family, cfg$depth_label, index_var, "path_specific_bootstrap", sep = "_") |>
+      stringr::str_replace_all("[^A-Za-z0-9]+", "_")
+    
+    message("Bootstrapping path-specific pSEM effects: ", model_id)
+    
+    focal_sources <- unique(c(index_var, "agb", "ai", "hmod", cfg$clay, cfg$cwm, "fdis", "sesmpd"))
+    
+    out <- bootstrap_psem_path_specific_one_model(
+      data = data,
+      index_var = index_var,
+      response = cfg$response,
+      clay = cfg$clay,
+      cwm = cfg$cwm,
+      focal_sources = focal_sources,
+      n_boot = n_boot,
+      seed = seed + i,
+      use_only_significant = FALSE,
+      max_depth = max_depth)
+    
+    if (is.null(out)) next
+    
+    boot_summaries[[model_id]] <- out$bootstrap_summary |>
+      dplyr::mutate(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label)
+    
+    boot_originals[[model_id]] <- out$original_paths |>
+      dplyr::mutate(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label,
+        index = index_var,
+        response_variable = cfg$response)
+    
+    boot_statuses[[model_id]] <- out$bootstrap_status |>
+      dplyr::mutate(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label,
+        response = cfg$response,
+        index = index_var)
+    
+    write.csv(out$bootstrap_replicates, paste0(out_prefix, "_replicates_", model_id, ".csv"), row.names = FALSE )
+  }
+  
+  summary_tbl <- dplyr::bind_rows(boot_summaries)
+  original_tbl <- dplyr::bind_rows(boot_originals)
+  status_tbl <- dplyr::bind_rows(boot_statuses)
+  
+  summary_tbl <- summary_tbl |>
+    dplyr::mutate(supported = !is.na(ci_lower) & !is.na(ci_upper) & ci_lower * ci_upper > 0,
+      ci_95 = paste0("[", round(ci_lower, 3), ", ", round(ci_upper, 3), "]"))
+  
+  write.csv( summary_tbl, paste0(out_prefix, "_bootstrap_path_specific_summary_", index_var, ".csv"), row.names = FALSE)
+  write.csv( original_tbl, paste0(out_prefix, "_original_path_specific_effects_", index_var, ".csv"), row.names = FALSE)
+  write.csv(status_tbl, paste0(out_prefix, "_bootstrap_status_", index_var, ".csv"), row.names = FALSE)
+  
+  list(summary = summary_tbl, original = original_tbl, status = status_tbl)}
+
+
+#####---------------------- Running the bootstrap for vci_sum (Fig. 3; Table S7)
+path_boot_final <- run_psem_path_specific_bootstrap_all_depths(
+  data = data_flo,
+  config = model_config,
+  index_var = "vci_sum",
+  n_boot = 1000,
+  seed = 123,
+  max_depth = 6,
+  out_prefix = "final_pSEM_path_specific"
+)
+
+
+
+#####------------------------------ Extracting table for supported effect, i.e., 
+####------------------------------- those whose bootstrap CI does not cross zero
+
+# Extract supported multi-mediator paths
+supported_multi_mediator_paths <- path_boot_final$summary |>
+  dplyr::filter(supported) |>
+  dplyr::arrange(family, depth_label, source, path)
+write.csv(supported_multi_mediator_paths, "supported_multi_all_mediator_pSEM_paths.csv", row.names = FALSE)
+
+
+# Extract supported bi-mediator paths only
+supported_multi_mediator_paths_m <- path_boot_final$summary |>
+  dplyr::filter(supported, n_edges > 2) |>
+  dplyr::arrange(family, depth_label, source, path)
+write.csv( supported_multi_mediator_paths_m, "supported_bi_mediator_pSEM_paths_m.csv",  row.names = FALSE)
+
+
+# Extract bootstrap summary table
+boot_eff <- path_boot_final$summary
+
+
+#####------------- Forest plot for VCI-AGB-nurient mediation paths only (Fig. 3)
+vci_agb_plot <- boot_eff |>
+  dplyr::filter(
+    source == "vci_sum",
+    effect_type == "agb_mediated_indirect",
+    n_edges == 2) |>
+  dplyr::mutate(
+    supported = !is.na(ci_lower) & !is.na(ci_upper) & ci_lower * ci_upper > 0,
+    label = paste(family, depth_label, sep = " | "),
+    label = factor(label, levels = c(
+      "SCN | 40-60 cm",
+      "SCN | 20-40 cm",
+      "SCN | 0-20 cm",
+      "SCN | 0-60 cm",
+      "STN | 40-60 cm",
+      "STN | 20-40 cm",
+      "STN | 0-20 cm",
+      "STN | 0-60 cm",
+      "SOC | 40-60 cm",
+      "SOC | 20-40 cm",
+      "SOC | 0-20 cm",
+      "SOC | 0-60 cm"
+    )))
+
+p_vci_agb<-ggplot2::ggplot(vci_agb_plot,
+           ggplot2::aes(x = original_estimate, y = label, xmin = ci_lower, xmax = ci_upper, shape = supported)) +
+  ggplot2::geom_vline(xintercept = 0, linetype = "dashed") +
+  ggplot2::geom_errorbarh(height = 0.2) +
+  ggplot2::geom_point(size = 2.5) +
+  ggplot2::labs(
+    x = "Bootstrapped indirect effect",
+    y = NULL,
+    shape = "Supported",
+    title = " VCI -> AGB -> SOC, STN, SCN   "
+  ) +
+  ggplot2::theme_classic(base_size = 14) +
+  ggplot2::theme(axis.title.x = ggplot2::element_text(face = "bold", size = 15),
+    axis.text.x = ggplot2::element_text(size = 12),
+    axis.text.y = ggplot2::element_text(face = "bold", size = 13),
+    plot.title = ggplot2::element_text(face = "bold",size = 15, hjust = 0.5),
+    legend.title = ggplot2::element_text(face = "bold", size = 13),
+    legend.text = ggplot2::element_text(face = "bold", size = 12) ); p_vci_agb
+
+ggplot2::ggsave(filename = "VCI_AGB_mediated.tiff", plot = p_vci_agb,
+                width = 5.5, height = 6, units = "in", dpi = 600, compression = "lzw")
+
+
+
+
+
+
+
+
+#------------------------------------------------------------------------------#
+# 12. Feedback pSEM for path: Soil C/N property -> AGB -> VCI 
+#     (Fig. 3, S5-S7; Tables S4-S5, S8, S14, S16)
+#------------------------------------------------------------------------------#
+
+###### Helper function for building feedback pSEM
+build_feedback_psem <- function(data, nutrient_var, index_var, clay, cwm) {
+  
+  piecewiseSEM::psem(
+    
+    # Soil nutrient response to environmental and human drivers
+    fit_lme( paste0(nutrient_var, " ~ ai + ", clay, " + hmod"), data = data),
+    # AGB response to environment + nutrient feedback
+    fit_lme(paste0("agb ~ ai + ", clay, " + hmod + ", nutrient_var), data = data),
+    # Functional diversity response
+    fit_lme(paste0("fdis ~ ai + ", clay, " + hmod + ", nutrient_var, " + agb"), data = data),
+    # CWM trait response
+    fit_lme(paste0(cwm, " ~ ai + ", clay, " + hmod + ", nutrient_var, " + agb"), data = data),
+    
+    # Phylogenetic structure response
+    fit_lme(paste0("sesmpd ~ ai + ", clay, " + hmod + ", nutrient_var, " + agb"), data = data),
+    
+    # Vegetation complexity response
+    fit_lme(paste0(index_var, " ~ ai + ", clay, " + hmod + ", nutrient_var, " + agb + fdis + ", cwm, " + sesmpd"), data = data))
+}
+
+
+
+
+##### Helper functiom to run all feedback pSEMs and export diagnostics/results
+run_all_feedback_psems <- function(indices = sensitivity_indices,
+                                   data = data_flo,
+                                   config = model_config,
+                                   p_cutoff = 0.05,
+                                   use_only_significant = TRUE,
+                                   out_prefix = "feedback") {
+  
+  all_results <- list()
+  all_rc <- list()
+  all_fit <- list()
+  all_coef <- list()
+  all_vif <- list()
+  all_diag <- list()
+  all_r2 <- list()
+  
+  for (idx in indices) {
+    for (i in seq_len(nrow(config))) {
+      
+      cfg <- config[i, ]
+      
+      model_id <- paste(cfg$family, cfg$depth_label, cfg$response, 
+        "to", idx, "feedback", sep = "_") |>
+        stringr::str_replace_all("[^A-Za-z0-9]+", "_")
+      
+      message("Fitting feedback pSEM: ", model_id)
+      
+      # Fit sem
+        sem <- build_feedback_psem(data = data, nutrient_var = cfg$response, index_var = idx,
+        clay = cfg$clay, cwm = cfg$cwm)
+      sm <- summary(sem)
+      cf <- get_coefs(sem)
+      
+      # Relative contributions to VCI/index response
+      rc <- relative_contribution_from_psem( sem, target = idx, p_cutoff = p_cutoff,
+        use_only_significant = use_only_significant)
+      
+      if (is.list(rc) && !is.null(rc$total_effects) && nrow(rc$total_effects) > 0) {
+        
+        all_rc[[model_id]] <- rc$total_effects |>
+          dplyr::mutate(
+            family = cfg$family, depth_label = cfg$depth_label, nutrient_var = cfg$response,
+            response = idx, index = idx, PredictorGroup = label_predictor_group(source, index_label = "VCI")) |>
+          dplyr::group_by(family, depth_label, nutrient_var, response, index, PredictorGroup) |>
+          dplyr::summarise(total_effect = sum(total_effect, na.rm = TRUE),
+            relative_contribution = sum(relative_contribution, na.rm = TRUE), .groups = "drop")
+        
+        write.csv(rc$paths, paste0(out_prefix, "_paths_", model_id, ".csv"), row.names = FALSE)}
+      
+      # Extract component lme models from pSEM object
+      mods <- if (!is.null(sem$modelList)) {
+      sem$modelList
+      } else {
+        sem}
+      mods <- mods[purrr::map_lgl(mods, ~ inherits(.x, "lme"))]
+      
+      # VIF for each component lme model
+      vif_tbl <- purrr::imap_dfr(mods, function(m, j) {component_response <- tryCatch(
+          all.vars(stats::formula(m))[1], error = function(e) NA_character_ )
+        
+        component_formula <- tryCatch(paste(deparse(stats::formula(m)), collapse = " "), error = function(e) NA_character_)
+        
+        safe_vif_lme(m) |>
+          dplyr::mutate(
+            component_model = as.character(j),
+            component_response = component_response,
+            component_formula = component_formula,
+            model_id = model_id,
+            family = cfg$family,
+            depth_label = cfg$depth_label,
+            nutrient_var = cfg$response,
+            response = idx,
+            index = idx)})
+      
+      if (nrow(vif_tbl) == 0) {
+        warning("No VIF values extracted for feedback model: ", model_id)
+      }
+      
+      # Residual diagnostics for each component lme model
+      diag_tbl <- purrr::imap_dfr(mods, function(m, j) {component_response <- tryCatch(
+          all.vars(stats::formula(m))[1], error = function(e) NA_character_)
+      component_formula <- tryCatch(paste(deparse(stats::formula(m)), collapse = " "),
+          error = function(e) NA_character_)
+        
+        dg <- diagnose_lme( model = m, model_name = paste0(model_id, "_component_", j))
+        
+        data.frame(
+          model_id = model_id,
+          family = cfg$family,
+          depth_label = cfg$depth_label,
+          nutrient_var = cfg$response,
+          response = idx,
+          index = idx,
+          component_model = as.character(j),
+          component_response = component_response,
+          component_formula = component_formula,
+          shapiro_residual_p = dg$shapiro_residual_p,
+          n_residual_outliers_abs_z_gt_3 = nrow(dg$residual_outliers),
+          stringsAsFactors = FALSE)})
+      
+      if (nrow(diag_tbl) == 0) {
+        warning("No residual diagnostics extracted for feedback model: ", model_id)
+      }
+      
+      # Marginal and conditional R2 for each component lme model
+      r2_tbl <- purrr::imap_dfr(mods, function(m, j) {
+        component_response <- tryCatch(all.vars(stats::formula(m))[1], error = function(e) NA_character_)
+        component_formula <- tryCatch( paste(deparse(stats::formula(m)), collapse = " "), error = function(e) NA_character_ )
+        
+        r2_out <- tryCatch(piecewiseSEM::rsquared(m), error = function(e) NULL)
+        
+        if (is.null(r2_out)) {
+          return(data.frame(
+            model_id = model_id,
+            family = cfg$family,
+            depth_label = cfg$depth_label,
+            nutrient_var = cfg$response,
+            response = idx,
+            index = idx,
+            component_model = as.character(j),
+            component_response = component_response,
+            component_formula = component_formula,
+            marginal_R2 = NA_real_,
+            conditional_R2 = NA_real_,
+            stringsAsFactors = FALSE))}
+        
+        data.frame(
+          model_id = model_id,
+          family = cfg$family,
+          depth_label = cfg$depth_label,
+          nutrient_var = cfg$response,
+          response = idx,
+          index = idx,
+          component_model = as.character(j),
+          component_response = component_response,
+          component_formula = component_formula,
+          marginal_R2 = r2_out$Marginal,
+          conditional_R2 = r2_out$Conditional,
+          stringsAsFactors = FALSE)})
+      
+      if (nrow(r2_tbl) == 0) {
+        warning("No R2 values extracted for feedback model: ", model_id)}
+      
+      # Store outputs
+      all_results[[model_id]] <- sem
+      
+      all_fit[[model_id]] <- data.frame(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label,
+        nutrient_var = cfg$response,
+        response = idx,
+        index = idx,
+        Fisher_C = tryCatch(sm$Cstat$Fisher.C, error = function(e) NA_real_),
+        df = tryCatch(sm$Cstat$df, error = function(e) NA_real_),
+        C_p_value = tryCatch(sm$Cstat$P.Value, error = function(e) NA_real_),
+        AIC = tryCatch(AIC(sem), error = function(e) NA_real_),
+        stringsAsFactors = FALSE)
+      
+      all_coef[[model_id]] <- cf |>
+        dplyr::mutate(
+          model_id = model_id,
+          family = cfg$family,
+          depth_label = cfg$depth_label,
+          nutrient_var = cfg$response,
+          response_variable = idx,
+          index = idx)
+      
+      all_vif[[model_id]] <- vif_tbl
+      all_diag[[model_id]] <- diag_tbl
+      all_r2[[model_id]] <- r2_tbl} }
+  
+  # Bind outputs
+  rc_tbl <- dplyr::bind_rows(all_rc)
+  fit_tbl <- dplyr::bind_rows(all_fit)
+  coef_tbl <- dplyr::bind_rows(all_coef)
+  vif_tbl <- dplyr::bind_rows(all_vif)
+  diag_tbl <- dplyr::bind_rows(all_diag)
+  r2_tbl <- dplyr::bind_rows(all_r2)
+  
+  # Export outputs
+  write.csv(rc_tbl, paste0(out_prefix, "_relative_contributions_all_indices.csv"), row.names = FALSE)
+  write.csv(fit_tbl, paste0(out_prefix, "_pSEM_fit_all_indices.csv"), row.names = FALSE)
+  write.csv(coef_tbl, paste0(out_prefix, "_pSEM_coefficients_all_indices.csv"), row.names = FALSE)
+  write.csv(vif_tbl, paste0(out_prefix, "_pSEM_VIF_all_indices.csv"), row.names = FALSE )
+  write.csv(diag_tbl, paste0(out_prefix, "_pSEM_lme_diagnostics_all_indices.csv"), row.names = FALSE)
+  write.csv(r2_tbl, paste0(out_prefix, "_pSEM_lme_R2_all_indices.csv"), row.names = FALSE)
+  
+  list(models = all_results, relative_contributions = rc_tbl, fit = fit_tbl,  coefficients = coef_tbl,
+    vif = vif_tbl, diagnostics = diag_tbl, r2 = r2_tbl)
+}
+
+
+
+#####---------------------- Fit feedback pSEMs and export coefficients, fit, VIF, 
+#####---------------------- diagnostics, R2
+
+feedback_psem_results <- run_all_feedback_psems(
+  indices = sensitivity_indices,
+  data = data_flo,
+  config = model_config,
+  p_cutoff = 0.05,
+  use_only_significant = TRUE,
+  out_prefix = "feedback"
+)
+
+
+
+
+
+#------------------------------------------------------------------------------#
+# 13. Bootstrap direct/indirect effects for feedback pSEMs, and forest plots
+#     Path: Soil C/N property -> AGB -> VCI (Fig. 3; Table S9
+#------------------------------------------------------------------------------#
+
+
+##### Helper function to bootstrap path-specific effects for one feedback pSEM
+bootstrap_feedback_psem_path_specific_one_model <- function(data,
+                                                            nutrient_var, index_var, clay,
+                                                            cwm, family, depth_label,
+                                                            focal_sources = NULL,
+                                                            n_boot = 1000, seed = 123,
+                                                            use_only_significant = FALSE,
+                                                            p_cutoff = 0.05, max_depth = 6) {
+  
+  if (is.null(focal_sources)) {focal_sources <- c(nutrient_var, "agb", "ai", "hmod",
+      clay, cwm, "fdis", "sesmpd")}
+  
+  focal_sources <- unique(focal_sources)
+  
+  set.seed(seed)
+  
+  # Fit original feedback pSEM
+  original_sem <- build_feedback_psem( data = data, nutrient_var = nutrient_var, index_var = index_var, clay = clay, cwm = cwm)
+  
+  # Extract path-specific effects from original model
+  original_paths <- path_specific_effects_from_psem(
+    sem_model = original_sem, target = index_var, focal_sources = focal_sources,
+    use_only_significant = use_only_significant, p_cutoff = p_cutoff, max_depth = max_depth)
+  
+  if (nrow(original_paths) == 0) {warning("No feedback paths found in original model for: ", nutrient_var, " -> ", index_var)
+    return(NULL)
+    }
+  
+  path_names <- original_paths$path
+  
+  original_vector <- vectorize_path_effects_for_boot(path_tbl = original_paths, path_names = path_names)
+  
+  boot_mat <- matrix(NA_real_, nrow = n_boot,  ncol = length(original_vector) )
+  
+  colnames(boot_mat) <- names(original_vector)
+  
+  boot_status <- data.frame(iteration = seq_len(n_boot), success = FALSE, error = NA_character_ )
+  
+  # Bootstrap loop
+  for (b in seq_len(n_boot)) {
+      boot_dat <- make_cluster_boot_data(data = data,       cluster_var = "plot_ID")
+    
+    res <- tryCatch({
+      boot_sem <- build_feedback_psem(data = boot_dat, nutrient_var = nutrient_var, index_var = index_var, clay = clay, cwm = cwm )
+      boot_paths <- path_specific_effects_from_psem(sem_model = boot_sem, target = index_var, focal_sources = focal_sources,
+        use_only_significant = use_only_significant, p_cutoff = p_cutoff, max_depth = max_depth)
+      vectorize_path_effects_for_boot(path_tbl = boot_paths, path_names = path_names)}, error = function(e) e)
+    
+    if (inherits(res, "error")) {boot_status$success[b] <- FALSE
+      boot_status$error[b] <- conditionMessage(res)
+    } else {
+      boot_mat[b, ] <- res
+      boot_status$success[b] <- TRUE}}
+  
+  boot_summary <- summarise_boot_path_effects(original_paths = original_paths, boot_matrix = boot_mat, conf = 0.95) |>
+    dplyr::mutate(family = family, depth_label = depth_label, nutrient_var = nutrient_var, index = index_var,
+      response = index_var, clay = clay, cwm = cwm, n_boot_requested = n_boot,
+      n_model_successful = sum(boot_status$success))
+  
+  list(original_sem = original_sem, original_paths = original_paths, bootstrap_summary = boot_summary,
+    bootstrap_replicates = as.data.frame(boot_mat), bootstrap_status = boot_status)}
+
+
+
+# Helper function to run path-specific feedback bootstrap across all depths 
+run_feedback_path_specific_bootstrap_all <- function(data = data_flo,
+                                                     config = model_config, index_var = "vci_sum",
+                                                     n_boot = 1000, seed = 123, max_depth = 6,
+                                                     out_prefix = "feedback_path_specific") {
+  
+  boot_summaries <- list()
+  boot_originals <- list()
+  boot_statuses <- list()
+  
+  for (i in seq_len(nrow(config))) {
+    cfg <- config[i, ]
+    
+    model_id <- paste(
+      cfg$family, cfg$depth_label, cfg$response, "to", index_var, "feedback_path_specific_bootstrap", sep = "_") |>
+      stringr::str_replace_all("[^A-Za-z0-9]+", "_")
+    
+    message("Bootstrapping path-specific feedback pSEM: ", model_id)
+    
+    focal_sources <- unique(c(cfg$response, "agb", "ai", "hmod", cfg$clay, cfg$cwm, "fdis", "sesmpd"))
+    
+    out <- bootstrap_feedback_psem_path_specific_one_model( data = data, nutrient_var = cfg$response, index_var = index_var,
+      clay = cfg$clay, cwm = cfg$cwm, family = cfg$family, depth_label = cfg$depth_label, focal_sources = focal_sources,
+      n_boot = n_boot, seed = seed + i, use_only_significant = FALSE, p_cutoff = 0.05, max_depth = max_depth)
+    
+    if (is.null(out)) next
+    
+    boot_summaries[[model_id]] <- out$bootstrap_summary |>
+      dplyr::mutate(model_id = model_id)
+    
+    boot_originals[[model_id]] <- out$original_paths |>
+      dplyr::mutate(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label,
+        nutrient_var = cfg$response,
+        index = index_var,
+        response_variable = index_var)
+    
+    boot_statuses[[model_id]] <- out$bootstrap_status |>
+      dplyr::mutate(
+        model_id = model_id,
+        family = cfg$family,
+        depth_label = cfg$depth_label,
+        nutrient_var = cfg$response,
+        index = index_var)
+    
+    write.csv(out$bootstrap_replicates, paste0(out_prefix, "_replicates_", model_id, ".csv"), row.names = FALSE)}
+  
+  summary_tbl <- dplyr::bind_rows(boot_summaries) |>
+    dplyr::mutate(supported = !is.na(ci_lower) & !is.na(ci_upper) & ci_lower * ci_upper > 0,
+      ci_95 = paste0("[", round(ci_lower, 3), ", ", round(ci_upper, 3), "]"))
+  
+  original_tbl <- dplyr::bind_rows(boot_originals)
+  status_tbl <- dplyr::bind_rows(boot_statuses)
+  
+  write.csv(summary_tbl, paste0(out_prefix, "_bootstrap_path_specific_summary_", index_var, ".csv"), row.names = FALSE)
+  write.csv(original_tbl, paste0(out_prefix, "_original_path_specific_effects_", index_var, ".csv"), row.names = FALSE)
+  write.csv(status_tbl, paste0(out_prefix, "_bootstrap_status_", index_var, ".csv"), row.names = FALSE)
+  
+  list(summary = summary_tbl, original = original_tbl, status = status_tbl)}
+
+
+
+##### Extract supported feedback path-specific effects
+
+extract_supported_feedback_path_specific_effects <- function(feedback_path_results,
+                                                             out_file_all = "feedback_supported_path_specific_effects.csv",
+                                                             out_file_clean = "feedback_supported_path_specific_effects_clean.csv") {
+  
+  supported <- feedback_path_results$summary |>
+    dplyr::filter(
+      supported, effect_type %in% c("direct", "agb_mediated_indirect", "other_indirect")) |>
+    dplyr::arrange(family, depth_label, source, n_edges, path)
+  
+  write.csv(supported, out_file_all, row.names = FALSE)
+  
+  supported_clean <- supported |>
+    dplyr::mutate(effect_direction = dplyr::case_when(
+        original_estimate > 0 ~ "positive",
+        original_estimate < 0 ~ "negative", TRUE ~ "zero"),
+      ci_95 = paste0("[", round(ci_lower, 3), ", ", round(ci_upper, 3), "]")) |>
+    dplyr::select(
+      family, depth_label, nutrient_var, index, source, target, path, n_edges, effect_type, original_estimate,
+      bootstrap_mean, bootstrap_sd, ci_lower, ci_upper, ci_95, effect_direction, supported, n_successful,
+      n_boot_requested, n_model_successful)
+  write.csv(supported_clean, out_file_clean, row.names = FALSE)
+  list( supported = supported, clean = supported_clean)}
+
+
+
+##### Forest plot for soil C/N property -> AGB -> VCI only
+
+plot_feedback_soil_agb_vci_forest <- function(feedback_path_results,
+                                              index_var = "vci_sum",
+                                              out_file = "feedback_soil_AGB_VCI_forest.tiff") {
+  
+  plot_df <- feedback_path_results$summary |>
+    dplyr::mutate(expected_path = paste(nutrient_var, "agb", index_var, sep = " -> ")) |>
+    dplyr::filter(effect_type == "agb_mediated_indirect", n_edges == 2, target == index_var,
+      source == nutrient_var, path == expected_path) |>
+    dplyr::distinct(family, depth_label, nutrient_var, source, target, path, .keep_all = TRUE) |>
+    dplyr::mutate(supported = !is.na(ci_lower) & !is.na(ci_upper) & ci_lower * ci_upper > 0,
+      label = paste(family, depth_label, sep = " | "),
+      label = factor(
+        label, levels = c(
+          "SOC | 0-60 cm",
+          "SOC | 0-20 cm",
+          "SOC | 20-40 cm",
+          "SOC | 40-60 cm",
+          "STN | 0-60 cm",
+          "STN | 0-20 cm",
+          "STN | 20-40 cm",
+          "STN | 40-60 cm",
+          "SCN | 0-60 cm",
+          "SCN | 0-20 cm",
+          "SCN | 20-40 cm",
+          "SCN | 40-60 cm"
+        ))) |>
+    dplyr::filter(!is.na(label))
+  
+  # Diagnostic check: should be 12 rows maximum
+  print(plot_df |>
+      dplyr::select(family, depth_label, nutrient_var, source, target, path, n_edges, effect_type))
+  
+  if (nrow(plot_df) == 0) {warning("No exact soil C/N -> AGB -> VCI paths found.")
+    return(list(plot_data = plot_df, plot = NULL))}
+  
+  p <- ggplot2::ggplot(plot_df,
+    ggplot2::aes(x = original_estimate, y = label, xmin = ci_lower, xmax = ci_upper, shape = supported)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+    ggplot2::geom_errorbar(orientation = "y", width = 0.2, linewidth = 0.6) +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::scale_y_discrete(limits = rev(levels(plot_df$label))) +
+    ggplot2::labs(x = "Bootstrapped indirect effect", y = NULL,
+      shape = "Supported", title = " SOC, STN, SCN -> AGB -> VCI ") +
+    ggplot2::theme_classic(base_size = 14) +
+    ggplot2::theme(
+      axis.title.x = ggplot2::element_text(face = "bold", size = 15),
+      axis.text.x = ggplot2::element_text(size = 12),
+      axis.text.y = ggplot2::element_text(face = "bold", size = 13),
+      plot.title = ggplot2::element_text(face = "bold", size = 15, hjust = 0.5),
+      legend.title = ggplot2::element_text(face = "bold", size = 13),
+      legend.text = ggplot2::element_text(face = "bold", size = 12))
+  
+  ggplot2::ggsave(filename = out_file, plot = p, width = 5.5, height = 6,
+    units = "in", dpi = 600, compression = "lzw")
+  
+  list(plot_data = plot_df, plot = p)
+}
+
+
+
+##### One wrapper: pSEM, bootstrap + supported table + forest plot
+run_feedback_path_specific_bootstrap_summary_and_plot <- function(data = data_flo,
+                                                                  config = model_config, index_var = "vci_sum",
+                                                                  n_boot = 1000, seed = 123,
+                                                                  max_depth = 6, out_prefix = "feedback_path_specific") {
+  # 1. Run path-specific bootstrap
+  feedback_path_results <- run_feedback_path_specific_bootstrap_all(
+    data = data, config = config, index_var = index_var, n_boot = n_boot, seed = seed,
+    max_depth = max_depth, out_prefix = out_prefix)
+  
+  # 2. Extract supported path-specific effects
+  supported <- extract_supported_feedback_path_specific_effects(
+    feedback_path_results = feedback_path_results,
+    out_file_all = paste0(out_prefix, "_supported_path_specific_effects_", index_var, ".csv"),
+    out_file_clean = paste0(out_prefix, "_supported_path_specific_effects_clean_", index_var, ".csv"))
+  
+  # 3. Extract specific soil C/N -> AGB -> VCI summary
+  soil_agb_vci_summary <- feedback_path_results$summary |>
+    dplyr::filter(
+      effect_type == "agb_mediated_indirect", path == paste(source, "agb", index_var, sep = " -> ")) |>
+    dplyr::mutate(supported = !is.na(ci_lower) & !is.na(ci_upper) & ci_lower * ci_upper > 0,
+      ci_95 = paste0("[", round(ci_lower, 3), ", ", round(ci_upper, 3), "]"), 
+      estimate = round(original_estimate, 3)) |>
+    dplyr::select(family, depth_label, nutrient_var, index, path, estimate, ci_95,
+      supported, n_successful, n_boot_requested, n_model_successful)
+  write.csv(soil_agb_vci_summary, paste0(out_prefix, "_soil_AGB_VCI_mediation_summary_", index_var, ".csv"), row.names = FALSE)
+  
+  # 4. Forest plot
+  forest <- plot_feedback_soil_agb_vci_forest(feedback_path_results = feedback_path_results, index_var = index_var,
+    out_file = paste0(out_prefix, "_soil_AGB_VCI_forest_", index_var, ".tiff"))
+  list(feedback_path_results = feedback_path_results, supported_effects = supported, soil_agb_vci_summary = soil_agb_vci_summary,
+    forest_plot = forest$plot, forest_plot_data = forest$plot_data)}
+
+
+
+#####--------------------------------------------------Running the feedback pSEM
+feedback_path_final <- run_feedback_path_specific_bootstrap_summary_and_plot(
+  data = data_flo,
+  config = model_config,
+  index_var = "vci_sum",
+  n_boot = 1000,
+  seed = 123,
+  max_depth = 6,
+  out_prefix = "final_feedback_path_specific"
+)
+
+
+#####-------------------------------- Extract all multi-mediator feedback paths
+supported_feedback_multi_mediator <- feedback_path_final$feedback_path_results$summary |>
+  dplyr::filter(supported) |>
+  dplyr::arrange(family, depth_label, source, path)
+write.csv(supported_feedback_multi_mediator, "supported_feedback_multi_all_mediator_paths.csv", row.names = FALSE)
+
+#####--------- Extract only multi-mediator feedback paths with more than 2 edges
+supported_feedback_multi_mediator <- feedback_path_final$feedback_path_results$summary |>
+  dplyr::filter(supported, n_edges > 2) |>
+  dplyr::arrange(family, depth_label, source, path)
+write.csv(supported_feedback_multi_mediator, "supported_feedback_multi_mediator_paths.csv", row.names = FALSE)
+
+
+#####-------------------------------- Plotting the forest plot with CIs (Fig. 3)
+forest <- plot_feedback_soil_agb_vci_forest(
+  feedback_path_results = feedback_path_final$feedback_path_results,
+  index_var = "vci_sum",
+  out_file = "feedback_soil_AGB_VCI_forest_exact_only.tiff"); forest$plot
+
+
+
+
+
+
+# ==============================================================================
+# 14. Bivariate mixed-effect relationships between predictors and
+#     SOC, STN, and SCN responses including all VCI sensitivity indices
+# ==============================================================================
+
+#####  Helper function for Safe bivariate model fitting
+
+fit_bivariate_lme_safe <- function(response, predictor, data) {
+  formula_text <- paste(response, "~", predictor)
+  tryCatch(fit_lme(formula_text, data), error = function(e) e)}
+
+
+#####  Helper function for extracting slope, SE, t-value, and p-value
+extract_bivariate_slope <- function(response, predictor, family, depth_label,
+                                    clay, cwm, data) {
+    model <- fit_bivariate_lme_safe(response = response, predictor = predictor, data = data)
+  
+  if (inherits(model, "error")) {
+    return(data.frame(
+      family = family,
+      depth_label = depth_label,
+      response = response,
+      predictor = predictor,
+      clay = clay,
+      cwm = cwm,
+      slope = NA_real_,
+      SE = NA_real_,
+      DF = NA_real_,
+      t_value = NA_real_,
+      p_value = NA_real_,
+      n_obs = NA_integer_,
+      model_failed = TRUE,
+      error_message = conditionMessage(model),
+      stringsAsFactors = FALSE))  }
+  
+  sm <- summary(model)
+  
+  data.frame(
+    family = family,
+    depth_label = depth_label,
+    response = response,
+    predictor = predictor,
+    clay = clay,
+    cwm = cwm,
+    slope = sm$tTable[2, "Value"],
+    SE = sm$tTable[2, "Std.Error"],
+    DF = sm$tTable[2, "DF"],
+    t_value = sm$tTable[2, "t-value"],
+    p_value = sm$tTable[2, "p-value"],
+    n_obs = nobs(model),
+    model_failed = FALSE,
+    error_message = NA_character_,
+    stringsAsFactors = FALSE)
+}
+
+
+
+#####  Helper function for labelling predictor 
+label_bivariate_predictor <- function(x) {
+  dplyr::case_when(
+    x == "agb" ~ "AGB",
+    x == "sesmpd" ~ "sesMPD",
+    x %in% c("hm", "lnc", "wd", "lcc", "sla", "ldmc") ~ "CWM",
+    x == "fdis" ~ "FDIS",
+    
+    x == "vci_sum" ~ "VCI",
+    x == "vci_pca" ~ "VCI_PCA",
+    x == "vci_pca_weighted" ~ "VCI_WPCA",
+    x == "vci_group_balanced" ~ "VCI_GR",
+    
+    stringr::str_detect(x, "^clay") ~ "Clay",
+    x == "ai" ~ "AI",
+    x == "hmod" ~ "HMOD",
+    TRUE ~ x)
+}
+
+
+##### Ordering predictors and parsing plot labels
+bivariate_predictor_levels <- c(
+  "AGB", "sesMPD", "CWM", "FDIS", "VCI", "VCI_PCA", "VCI_WPCA", "VCI_GR", "Clay", "AI", "HMOD")
+
+bivariate_predictor_labels <- c("AGB" = "bold(AGB)", "sesMPD" = "bold(sesMPD)",
+  "CWM" = "bold(CWM)", "FDIS" = "bold(F[DIS])", "VCI" = "bold(VCI)",
+  "VCI_PCA" = "bold(VCI[PCA])", "VCI_WPCA" = "bold(VCI[WPCA])",
+  "VCI_GR" = "bold(VCI[GR])", "Clay" = "bold(Clay)", "AI" = "bold(AI)", "HMOD" = "bold(H[MOD])")
+
+
+
+##### Helper function for running all bivariate models
+run_all_bivariate_models <- function(data = data_flo,
+                                     config = model_config,
+                                     indices = sensitivity_indices,
+                                     out_file = "bivariate_results_all_families.csv") {
+    all_results <- purrr::pmap_dfr(
+    config,
+    function(family, depth_label, response, clay, cwm, ...) {
+      
+      predictors <- c("agb", "sesmpd", cwm, "fdis", indices, clay, "ai", "hmod")
+      
+      predictors <- unique(predictors)
+      
+      purrr::map_dfr(
+        predictors, ~ extract_bivariate_slope(
+          response = response,
+          predictor = .x,
+          family = family,
+          depth_label = depth_label,
+          clay = clay,
+          cwm = cwm,
+          data = data))}) |>
+    dplyr::mutate(
+      PredictorGroup = label_bivariate_predictor(predictor),
+      PredictorGroup = factor(
+        PredictorGroup, levels = bivariate_predictor_levels),
+      depth_label = factor(
+        depth_label,
+        levels = c("0-60 cm", "0-20 cm", "20-40 cm", "40-60 cm")),
+      family = factor(
+        family, levels = c("SOC", "STN", "SCN")),
+      Significance = dplyr::case_when(
+        model_failed ~ "Model failed",
+        p_value < 0.05 & slope > 0 ~ "Significant & Positive",
+        p_value < 0.05 & slope < 0 ~ "Significant & Negative",
+        TRUE ~ "Non-significant"),
+      Border_Color = dplyr::case_when(
+        model_failed ~ "grey",
+        slope > 0 ~ "blue",
+        slope < 0 ~ "red",
+        TRUE ~ "grey"))
+  
+  write.csv(all_results, out_file, row.names = FALSE)
+  all_results
+}
+
+
+##### Helper function for plotting bivariate slopes for one family
+plot_bivariate_family <- function(results,
+                                  family_name,
+                                  plot_title,
+                                  out_file,
+                                  width = 7.5,
+                                  height = 7.5,
+                                  show_legend = TRUE) {
+  
+  plot_df <- results |>
+    dplyr::filter(family == family_name) |>
+    dplyr::filter(!is.na(PredictorGroup)) |>
+    droplevels()
+  
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = depth_label, y = PredictorGroup)) +
+    ggplot2::geom_point(
+      ggplot2::aes(size = abs(slope), fill = Significance, color = Border_Color),
+      shape = 21, stroke = 0.5, show.legend = c(color = FALSE)) +
+    ggplot2::scale_fill_manual(
+      values = c(
+        "Significant & Positive" = "blue",
+        "Significant & Negative" = "red",
+        "Non-significant" = "white",
+        "Model failed" = "grey80"),
+      drop = TRUE) +
+    ggplot2::scale_color_manual(
+      values = c(
+        "blue" = "blue",
+        "red" = "red",
+        "grey" = "grey"),
+      drop = TRUE) +
+    ggplot2::scale_size_continuous(range = c(3, 8), name = "Abs(Slope)") +
+    ggplot2::scale_y_discrete(
+      labels = function(x) parse(text = bivariate_predictor_labels[x])) +
+    ggplot2::labs(title = plot_title, x = "Layer", y = "", fill = "Significance & sign") +
+    ggplot2::theme_bw() +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, face = "bold", size = 12),
+      axis.text.y = ggplot2::element_text(face = "bold", size = 12),
+      axis.title = ggplot2::element_text(face = "bold"),
+      plot.title = ggplot2::element_text(face = "bold", size = 12),
+      panel.grid.major = ggplot2::element_line(color = "lightgrey", linewidth = 0.01),
+      panel.grid.minor = ggplot2::element_line(color = "lightgrey", linewidth = 0.01),
+      panel.border = ggplot2::element_rect(color = "black", linewidth = 0.01),
+      legend.position = ifelse(show_legend, "right", "none"))
+  
+  ggplot2::ggsave(filename = out_file, plot = p, width = width, height = height,
+    units = "in", dpi = 600, compression = "lzw" )
+  p}
+
+
+
+
+#####--------------------------- Running and plotting bivariate relationships
+
+### Running bivariate relationships
+bivariate_results <- run_all_bivariate_models(
+  data = data_flo,
+  config = model_config,
+  indices = sensitivity_indices,
+  out_file = "bivariate_results_all_families_with_VCI_sensitivity.csv"
+)
+
+
+### Plotting bivariate relationships
+
+## For SOC
+p_soc_biv <- plot_bivariate_family(
+  results = bivariate_results,
+  family_name = "SOC",
+  plot_title = "(a) Soil organic carbon stock (SOC)",
+  out_file = "SOC_bivariate_slopes_with_VCI_sensitivity.tiff",
+  width = 7.5,
+  height = 7.5,
+  show_legend = TRUE
+)
+
+## For STN
+p_stn_biv <- plot_bivariate_family(
+  results = bivariate_results,
+  family_name = "STN",
+  plot_title = "(b) Soil total nitrogen stock (STN)",
+  out_file = "STN_bivariate_slopes_with_VCI_sensitivity.tiff",
+  width = 7.5,
+  height = 7.5,
+  show_legend = TRUE
+)
+
+## For SCN
+p_scn_biv <- plot_bivariate_family(
+  results = bivariate_results,
+  family_name = "SCN",
+  plot_title = "(c) Soil C:N ratio (SCN)",
+  out_file = "SCN_bivariate_slopes_with_VCI_sensitivity.tiff",
+  width = 7.5,
+  height = 7.5,
+  show_legend = TRUE
+)
+
+
+
+##### ----------------------------------- Exporting plots (Fig. S3)
+
+plot_list <- list(SOC = p_soc_biv,  STN = p_stn_biv, SCN = p_scn_biv)
+
+plot_list <- purrr::map(plot_list, function(p) {
+  p +
+    ggplot2::theme(
+      panel.grid.major = ggplot2::element_line(
+        color = "grey80",
+        linewidth = 0.25
+      ),
+      panel.grid.minor = ggplot2::element_blank(),
+      panel.border = ggplot2::element_rect(
+        color = "black",
+        fill = NA,
+        linewidth = 0.5
+      ),
+      axis.line = ggplot2::element_line(
+        color = "black",
+        linewidth = 0.4
+      )
+    )
+})
+
+
+purrr::iwalk(plot_list, function(p, nm) {
+  ggplot2::ggsave(
+    filename = paste0(nm, "_bivariate_slopes_with_VCI_sensitivity.tiff"),
+    plot = p,
+    width = 7.5,
+    height = 7.5,
+    units = "in",
+    dpi = 600,
+    device = "tiff",
+    compression = "lzw"
+  )
+})
+
+
+
+
+################################################################################
+# End of script
+################################################################################
