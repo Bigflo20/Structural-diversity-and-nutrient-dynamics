@@ -1,0 +1,33 @@
+variable,definition
+plot_ID,Plot unique ID
+rich,species richness
+cvdbh,coefficient of variation in DBH
+cvheight,coefficient of variation in height
+dens,tree density
+sesmpd,ses mean pairwise distance
+clayall,Clay content in 0-60 cm (%)
+clay20,Clay content in 0-20 cm (%)
+clay40,Clay content in 20-40 cm (%)
+clay60,Clay content in 40-60 cm (%)
+ai,Aridity index
+agb,aboveground biomass
+fdis,Functional dispersion
+wd,wood density
+hm,Maximum height
+sla,Specific leaf area
+ldmc,Leaf dry matter content
+lcc,Leaf carbon content
+lnc,Leaf nitrogen content
+socall,soil organic carbon stock in 0-60 cm
+soc20,soil organic carbon stock in 0-20 cm
+soc40,soil organic carbon stock in 20-40 cm
+soc60,soil organic carbon stock in 40-60 cm
+stnall,soil total nitrogen stock in 0-60 cm
+stn20,soil total nitrogen stock in 0-20 cm
+stn40,soil total nitrogen stock in 20-40 cm
+stn60,soil total nitrogen stock in 40-60 cm
+scnall,soil carbon to nitrogen ratio in 0-60 cm
+scn20,soil carbon to nitrogen ratio in 0-20 cm
+scn40,soil carbon to nitrogen ratio in 20-40 cm
+scn60,soil carbon to nitrogen ratio in 40-60 cm
+hmod,Human modification index
