@@ -10,4 +10,7 @@ The R code allows you to perform the following analysis:
 8) Bootstrapping analysis for main pSEM
 9) piecewise structural modeling (pSEM) for feedback conceptual models
 10) Bootstrapping analysis for main pSEM
-11) Bivariate relationships analysis
+11) Bivariate relationships analysis.
+
+
+To perform the analysis, use the dataset "data-flo"
